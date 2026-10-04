@@ -1,0 +1,1046 @@
+"""
+engine.py — posting ka poora engine. Har function user_id leta hai, us user
+ki settings, uska channel aur uska affiliate tag use karta hai.
+"""
+import os
+import io
+import re
+import html as html_lib
+import asyncio
+import logging
+import aiohttp
+from collections import deque
+from datetime import datetime, timedelta
+
+from telegram import InlineKeyboardMarkup, InlineKeyboardButton, InputFile
+from telegram.constants import ParseMode
+from telegram.error import RetryAfter, TimedOut, NetworkError, Forbidden, BadRequest
+
+from amazon_api import (
+    is_amazon_url, is_amazon_search_url, resolve_amazon_url,
+    extract_asin, get_products_by_asins,
+    make_affiliate_url, make_cart_url, get_short_affiliate_link,
+)
+from caption import build_amazon_caption, wrap_plain_post, FIELD_LABELS
+from database import (
+    is_duplicate, mark_posted, log_post, posts_today,
+    queue_add_amazon, queue_add_other, queue_fetch_all, queue_delete,
+    queue_bump_tries, queue_purge_old, queue_counts,
+)
+from storage import load_config
+from users import is_admin, is_active
+from watermark import apply_watermark
+
+logger = logging.getLogger(__name__)
+
+# Telegram channel limit ~20 msg/min. 4 second = 15/min — andar rehne ke liye.
+POST_GAP_SECONDS    = 4.0
+MAX_PER_MESSAGE     = 15
+QUEUE_MAX_AGE_HOURS = 4
+MAX_POST_TRIES      = 3
+DAILY_POST_LIMIT    = int(os.getenv("DAILY_POST_LIMIT", "300"))   # 0 = unlimited
+
+SELF_MARKER = "\u2063"        # invisible — bot apne message pehchanne ke liye
+
+# ── TIMEZONE ─────────────────────────────────────────────────────────────
+from storage import LOCAL_TZ, to_local, local_day_start_utc  # noqa: E402
+
+
+def now_local() -> datetime:
+    return datetime.now(LOCAL_TZ)
+
+
+def hhmm(dt: datetime) -> str:
+    return dt.strftime("%H:%M")
+
+
+def fmt_date(dt) -> str:
+    """DB ka UTC time → IST mein saaf format."""
+    if not dt:
+        return "—"
+    return to_local(dt).strftime("%d %b %Y, %I:%M %p")
+
+
+def fmt_short(dt) -> str:
+    if not dt:
+        return "—"
+    return to_local(dt).strftime("%d %b %H:%M")
+
+
+def day_start_naive() -> datetime:
+    """Aaj (IST) ki shuruaat — DB queries ke liye UTC mein."""
+    return local_day_start_utc()
+
+
+URL_REGEX = re.compile(r"(https?://[^\s\]\[<>\"']+)")
+
+FOOTER_LINE_PATTERN = re.compile(
+    r'^[-—\s]*(deal\s*from|buy\s*on|shop\s*on|source\s*:|via\s*:|'
+    r'brought\s*by|available\s*on|check\s*on|grab\s*on|get\s*it\s*on|'
+    r'amazon\s*deal|flipkart\s*deal|meesho\s*deal|deal\s*by|'
+    r'posted\s*by|bot\s*by)\b.*$',
+    re.IGNORECASE
+)
+
+_own_msg_ids = deque(maxlen=2000)
+_own_msg_set = set()
+
+# Har user ki ek hi batch ek waqt pe
+_flush_locks: dict = {}
+
+
+def _flush_lock(uid: int) -> asyncio.Lock:
+    lock = _flush_locks.get(uid)
+    if lock is None:
+        lock = _flush_locks[uid] = asyncio.Lock()
+    return lock
+
+
+def remember_own(m):
+    if not m:
+        return m
+    try:
+        key = (m.chat_id, m.message_id)
+    except Exception:
+        return m
+    if len(_own_msg_ids) == _own_msg_ids.maxlen:
+        _own_msg_set.discard(_own_msg_ids[0])
+    _own_msg_ids.append(key)
+    _own_msg_set.add(key)
+    return m
+
+
+def is_own_message(msg, bot_id) -> bool:
+    if msg.from_user and msg.from_user.id == bot_id:
+        return True
+    try:
+        if (msg.chat_id, msg.message_id) in _own_msg_set:
+            return True
+    except Exception:
+        pass
+    return SELF_MARKER in (msg.text or msg.caption or "")
+
+
+# =============================================================================
+# BASIC HELPERS
+# =============================================================================
+def extract_urls(text: str) -> list:
+    return URL_REGEX.findall(text) if text else []
+
+
+def hidden_link_urls(entities) -> list:
+    """Text ke peeche chhupe link (jaise 'Buy Now' pe link) — inme bhi Amazon ho sakta hai."""
+    out = []
+    for e in (entities or []):
+        if str(getattr(e.type, "value", e.type)) == "text_link" and getattr(e, "url", None):
+            out.append(e.url)
+    return out
+
+
+def get_amazon_urls(urls: list) -> list:
+    return [u for u in urls if is_amazon_url(u)]
+
+
+async def _download_image(url: str):
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                url, timeout=aiohttp.ClientTimeout(total=15),
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+            ) as resp:
+                if resp.status == 200:
+                    return await resp.read()
+    except Exception as e:
+        logger.error(f"Image download fail: {e}")
+    return None
+
+
+async def _get_photo_bytes(bot, file_id: str):
+    if not file_id:
+        return None
+    try:
+        file = await bot.get_file(file_id)
+        return bytes(await file.download_as_bytearray())
+    except Exception as e:
+        logger.error(f"Photo download fail: {e}")
+    return None
+
+
+def chat_matches(chat, ident: str) -> bool:
+    if not chat or not ident:
+        return False
+    ident = str(ident).strip()
+    if not ident:
+        return False
+    if ident.startswith("@"):
+        return (chat.username or "").lower() == ident[1:].lower()
+    try:
+        return chat.id == int(ident)
+    except (ValueError, TypeError):
+        return (chat.username or "").lower() == ident.lower()
+
+
+def same_channel(a: str, b: str) -> bool:
+    x = (str(a or "")).strip().lstrip("@").lower()
+    y = (str(b or "")).strip().lstrip("@").lower()
+    return bool(x) and x == y
+
+
+async def dm_user(bot, uid: int, text: str, **kwargs):
+    try:
+        return await bot.send_message(chat_id=uid, text=text, **kwargs)
+    except Forbidden:
+        from users import mark_bot_blocked
+        mark_bot_blocked(uid)
+    except Exception as e:
+        logger.error(f"DM fail ({uid}): {e}")
+    return None
+
+
+async def _edit_or_notify(wait_msg, notify, text, **kwargs):
+    if wait_msg:
+        try:
+            await wait_msg.edit_text(text + SELF_MARKER, **kwargs)
+            return
+        except Exception:
+            pass
+    await notify(text, **kwargs)
+
+
+async def _delete_quiet(m):
+    if m:
+        try:
+            await m.delete()
+        except Exception:
+            pass
+
+
+def next_hour_delay() -> float:
+    now = now_local()
+    nxt = (now + timedelta(hours=1)).replace(minute=0, second=5, microsecond=0)
+    return max(10.0, (nxt - now).total_seconds())
+
+
+def next_batch_label() -> str:
+    nxt = (now_local() + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+    return hhmm(nxt)
+
+
+def posts_left_today(uid: int):
+    """Aaj kitni post aur kar sakta hai. None = koi limit nahi."""
+    if is_admin(uid) or DAILY_POST_LIMIT <= 0:
+        return None
+    return max(0, DAILY_POST_LIMIT - posts_today(uid))
+
+
+# =============================================================================
+# ENTITY / HTML
+# =============================================================================
+def _py_to_utf16_len(text: str) -> int:
+    return sum(2 if ord(ch) > 0xFFFF else 1 for ch in text)
+
+
+class _Ent:
+    __slots__ = ("offset", "length", "type", "url")
+
+    def __init__(self, offset, length, type_, url=None):
+        self.offset = offset
+        self.length = length
+        self.type   = type_
+        self.url    = url
+
+
+def _clone_ent(ent, offset=None, length=None) -> _Ent:
+    return _Ent(ent.offset if offset is None else offset,
+                ent.length if length is None else length,
+                ent.type, getattr(ent, "url", None))
+
+
+def ents_to_json(entities) -> list:
+    return [{"offset": e.offset, "length": e.length,
+             "type": str(getattr(e.type, "value", e.type)),
+             "url": getattr(e, "url", None)} for e in (entities or [])]
+
+
+def ents_from_json(raw) -> list:
+    return [_Ent(d["offset"], d["length"], d["type"], d.get("url")) for d in (raw or [])]
+
+
+_URL_CHAR_RE = re.compile(r"[^\s\]\[<>\"']")
+
+
+def _find_whole_url(text: str, url: str, start: int = 0) -> int:
+    """`url` ki position jahan wo POORA link hai (kisi lambe link ka hissa nahi)."""
+    idx = text.find(url, start)
+    while idx >= 0:
+        end = idx + len(url)
+        if end >= len(text) or not _URL_CHAR_RE.match(text[end]):
+            return idx
+        idx = text.find(url, idx + 1)
+    return -1
+
+
+def replace_url_keep_entities(text: str, entities: list, old_url: str, new_url: str,
+                              start: int = 0, return_pos: bool = False):
+    """URL badlo aur entity offsets bhi shift karo — warna formatting khisak jaati hai."""
+    idx = _find_whole_url(text, old_url, start) if old_url and old_url != new_url else -1
+    if idx < 0:
+        return (text, entities, -1) if return_pos else (text, entities)
+
+    start_u16 = _py_to_utf16_len(text[:idx])
+    old_u16   = _py_to_utf16_len(old_url)
+    new_u16   = _py_to_utf16_len(new_url)
+    end_u16   = start_u16 + old_u16
+    delta     = new_u16 - old_u16
+
+    new_text = text[:idx] + new_url + text[idx + len(old_url):]
+
+    new_ents = []
+    for ent in (entities or []):
+        s = ent.offset
+        e = ent.offset + ent.length
+        if e <= start_u16:
+            new_ents.append(_clone_ent(ent))
+        elif s >= end_u16:
+            new_ents.append(_clone_ent(ent, offset=s + delta))
+        elif s <= start_u16 and e >= end_u16:
+            new_ents.append(_clone_ent(ent, length=ent.length + delta))
+    if return_pos:
+        return new_text, new_ents, idx + len(new_url)
+    return new_text, new_ents
+
+
+async def replace_amazon_links(text: str, entities: list, urls: list, tag: str):
+    """Har Amazon link (har jagah jahan aaya) pe user ka tag — dikhne wale + chhupe hue."""
+    uniq = []
+    for u in urls:
+        if u not in uniq and is_amazon_url(u):
+            uniq.append(u)
+    for url in sorted(uniq, key=len, reverse=True):
+        if url not in text:
+            continue
+        try:
+            short = await get_short_affiliate_link(url, tag)
+        except Exception as e:
+            logger.error(f"Affiliate link fail: {e}")
+            continue
+        pos = 0
+        for _ in range(20):
+            text, entities, pos = replace_url_keep_entities(text, entities, url, short,
+                                                            start=pos, return_pos=True)
+            if pos < 0:
+                break
+    # Text-link (hidden link) entities mein bhi Amazon link ho sakta hai
+    fixed = []
+    for ent in (entities or []):
+        if str(getattr(ent.type, "value", ent.type)) == "text_link" and is_amazon_url(ent.url or ""):
+            try:
+                new_url = await get_short_affiliate_link(ent.url, tag)
+                ent = _Ent(ent.offset, ent.length, "text_link", new_url)
+            except Exception:
+                pass
+        fixed.append(ent)
+    return text, fixed
+
+
+def remove_footer(plain_text: str, entities: list):
+    lines = plain_text.split('\n')
+    while lines and not lines[-1].strip():
+        lines.pop()
+    changed = True
+    while changed and lines:
+        changed = False
+        if FOOTER_LINE_PATTERN.match(lines[-1].strip()):
+            lines.pop()
+            changed = True
+    cleaned = '\n'.join(lines).rstrip()
+    if not cleaned.strip() and plain_text.strip():
+        return plain_text.rstrip(), list(entities or [])
+    cutoff = _py_to_utf16_len(cleaned)
+    return cleaned, [e for e in (entities or []) if e.offset + e.length <= cutoff]
+
+
+def _build_utf16_map(text: str) -> list:
+    mapping = []
+    for py_idx, ch in enumerate(text):
+        mapping.append(py_idx)
+        if ord(ch) > 0xFFFF:
+            mapping.append(py_idx)
+    mapping.append(len(text))
+    return mapping
+
+
+def entities_to_html(text: str, entities: list) -> str:
+    if not entities:
+        return html_lib.escape(text)
+
+    utf16_map  = _build_utf16_map(text)
+    open_tags  = [""] * len(text)
+    close_tags = [""] * len(text)
+
+    pairs = {
+        "url":           ("<b>", "</b>"),
+        "bold":          ("<b>", "</b>"),
+        "italic":        ("<i>", "</i>"),
+        "underline":     ("<u>", "</u>"),
+        "strikethrough": ("<s>", "</s>"),
+        "code":          ("<code>", "</code>"),
+        "pre":           ("<pre>", "</pre>"),
+        "spoiler":       ("<tg-spoiler>", "</tg-spoiler>"),
+    }
+    for ent in sorted(entities, key=lambda e: (e.offset, -e.length)):
+        s_u16 = ent.offset
+        e_u16 = ent.offset + ent.length
+        s = utf16_map[s_u16] if s_u16 < len(utf16_map) else s_u16
+        e = utf16_map[e_u16] if e_u16 < len(utf16_map) else e_u16
+        if e > len(text) or s >= len(text) or e <= s:
+            continue
+        etype = str(getattr(ent.type, "value", ent.type))
+        if etype == "text_link":
+            url = html_lib.escape(ent.url or "")
+            open_tags[s]    = f'<a href="{url}"><b>' + open_tags[s]
+            close_tags[e-1] = close_tags[e-1] + '</b></a>'
+        elif etype in pairs:
+            o, c = pairs[etype]
+            open_tags[s]    = o + open_tags[s]
+            close_tags[e-1] = close_tags[e-1] + c
+
+    result = []
+    for i, ch in enumerate(text):
+        result.append(open_tags[i])
+        result.append(html_lib.escape(ch))
+        result.append(close_tags[i])
+    return ''.join(result)
+
+
+# =============================================================================
+# BUTTONS UNDER POST
+# =============================================================================
+def build_final_markup(config: dict, asin: str = ""):
+    """Buy Now / Add to Cart sirf Amazon post pe (user ke tag ke saath)."""
+    btns = config.get("buttons", {})
+    tag  = config.get("tag", "")
+    rows = []
+
+    amz_row = []
+    if asin:
+        buy = btns.get("buy", {})
+        if buy.get("enabled"):
+            amz_row.append(InlineKeyboardButton(buy.get("label") or "⚡ Buy Now",
+                                                url=make_affiliate_url(asin, tag)))
+        cart = btns.get("cart", {})
+        if cart.get("enabled"):
+            amz_row.append(InlineKeyboardButton(cart.get("label") or "🛒 Add to Cart",
+                                                url=make_cart_url(asin, tag)))
+    if amz_row:
+        rows.append(amz_row)
+
+    row = []
+    for key in ("btn1", "btn2"):
+        b = btns.get(key, {})
+        if b.get("enabled") and b.get("label") and b.get("url"):
+            row.append(InlineKeyboardButton(b["label"], url=b["url"]))
+    if row:
+        rows.append(row)
+    return InlineKeyboardMarkup(rows) if rows else None
+
+
+# =============================================================================
+# POSTING
+# =============================================================================
+async def _send_with_retry(coro_factory, tries: int = 3):
+    last_err = None
+    for attempt in range(tries):
+        try:
+            return await coro_factory()
+        except RetryAfter as e:
+            wait = float(getattr(e, "retry_after", 5)) + 1
+            logger.warning(f"429 — {wait:.0f}s ruk raha hoon (try {attempt+1})")
+            await asyncio.sleep(wait)
+            last_err = e
+        except (TimedOut, NetworkError) as e:
+            if isinstance(e, BadRequest):
+                raise
+            await asyncio.sleep(2 + attempt * 2)
+            last_err = e
+    if last_err:
+        raise last_err
+    return None
+
+
+def _friendly_error(e: Exception) -> str:
+    """Telegram ki error ko aam bhasha mein."""
+    s = str(e)
+    low = s.lower()
+    if "chat not found" in low:
+        return "Channel nahi mila — channel dobara set karo (/channel)."
+    if "not enough rights" in low or "need administrator rights" in low or isinstance(e, Forbidden):
+        return "Bot ko channel mein admin nahi banaya ya 'Post Messages' permission band hai."
+    return s[:150]
+
+
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def html_to_plain(s: str) -> str:
+    return html_lib.unescape(_HTML_TAG_RE.sub("", s or ""))
+
+
+async def deliver(send_fn, kwargs: dict, photo_bytes: bytes = None, photo_name: str = "post.jpg"):
+    """
+    Post bhejo. Do galtiyon pe post fail nahi hone dete:
+      • formatting (HTML) toot gayi  → bina formatting dobara bhejo
+      • button ka link galat          → bina buttons dobara bhejo
+    """
+    kw = dict(kwargs)
+    tried = set()
+
+    def build():
+        d = dict(kw)
+        if photo_bytes is not None:
+            d["photo"] = InputFile(io.BytesIO(photo_bytes), filename=photo_name)
+        return d
+
+    while True:
+        try:
+            return await _send_with_retry(lambda: send_fn(**build()))
+        except BadRequest as e:
+            low = str(e).lower()
+            if "parse" in low and "entit" in low and "parse" not in tried:
+                tried.add("parse")
+                logger.warning(f"HTML parse fail — plain text mein bhej raha hoon: {e}")
+                for k in ("text", "caption"):
+                    if kw.get(k):
+                        kw[k] = html_to_plain(kw[k])
+                kw["parse_mode"] = None
+                continue
+            if (kw.get("reply_markup") is not None and "markup" not in tried
+                    and ("button" in low or "url" in low)):
+                tried.add("markup")
+                logger.warning(f"Button fail — bina button bhej raha hoon: {e}")
+                kw["reply_markup"] = None
+                continue
+            raise
+
+
+async def post_amazon_product(context, uid: int, product: dict, cfg: dict, force: bool = False):
+    """
+    Ek Amazon product user ke channel pe post karo.
+    Returns (status, detail, note) — posted / duplicate / error
+    force=True → duplicate check skip (price drop wali post).
+    """
+    asin     = product.get("asin", "")
+    channel  = str(cfg.get("channel", "")).strip()
+    tag      = cfg.get("tag", "")
+    silent   = cfg.get("silent", True)
+    detailed = cfg.get("amz_detailed", True)
+    fields   = cfg.get("amz_fields", {})
+    wm       = cfg.get("watermark", {})
+    title    = (product.get("title") or "").strip()
+
+    if not force:
+        dup, when = is_duplicate(uid, title or asin)
+        if dup:
+            return "duplicate", f"{title[:55] or asin} — {when}", ""
+
+    want_image = detailed and fields.get("image", True)
+    short_link = make_affiliate_url(asin, tag)
+    wm_on = wm.get("enabled") and (wm.get("text") or "").strip()
+
+    img_bytes = None
+    if want_image and product.get("image_url"):
+        img_bytes = await _download_image(product["image_url"])
+        if img_bytes and wm_on:
+            img_bytes = apply_watermark(img_bytes, wm.get("text"))
+
+    caption, _ = build_amazon_caption(product, short_link, cfg, has_image=bool(img_bytes))
+    markup = build_final_markup(cfg, asin=asin)
+
+    note = ""
+    if img_bytes:
+        note = "Amazon" + (" + Watermark" if wm_on else "")
+
+    try:
+        if img_bytes:
+            await deliver(context.bot.send_photo,
+                          dict(chat_id=channel, caption=caption, parse_mode=ParseMode.HTML,
+                               reply_markup=markup, disable_notification=silent),
+                          photo_bytes=img_bytes, photo_name=f"{asin}.jpg")
+        else:
+            await deliver(context.bot.send_message,
+                          dict(chat_id=channel, text=caption, parse_mode=ParseMode.HTML,
+                               disable_web_page_preview=True, reply_markup=markup,
+                               disable_notification=silent))
+        mark_posted(uid, title or asin)
+        log_post(uid, "amazon", asin, title)
+        return "posted", title or asin, note
+    except Exception as e:
+        logger.error(f"Post fail {uid}/{asin}: {e}")
+        return "error", _friendly_error(e), ""
+
+
+async def post_other(context, uid: int, payload: dict, cfg: dict):
+    """Non-Amazon post. Returns (status, detail)."""
+    channel = str(cfg.get("channel", "")).strip()
+    silent  = cfg.get("silent", True)
+    wm      = cfg.get("watermark", {})
+    wm_on   = wm.get("enabled") and (wm.get("text") or "").strip()
+
+    text       = payload.get("text") or ""
+    entities   = ents_from_json(payload.get("entities"))
+    file_id    = payload.get("photo_file_id") or ""
+    media_fid  = payload.get("media_file_id") or ""
+    media_kind = payload.get("media_kind") or ""
+
+    dup_key = (text.strip() or file_id or media_fid)[:300]
+    if dup_key:
+        dup, when = is_duplicate(uid, dup_key)
+        if dup:
+            return "duplicate", f"non-Amazon post — {when}"
+
+    body_html = entities_to_html(text, entities) if text else ""
+
+    try:
+        if file_id:
+            img_bytes = await _get_photo_bytes(context.bot, file_id)
+            if img_bytes and wm_on:
+                img_bytes = apply_watermark(img_bytes, wm.get("text"))
+            caption = wrap_plain_post(body_html, cfg, has_image=True) if text else None
+            base = dict(chat_id=channel, caption=caption,
+                        parse_mode=ParseMode.HTML if caption else None,
+                        reply_markup=build_final_markup(cfg), disable_notification=silent)
+            if img_bytes:
+                await deliver(context.bot.send_photo, base, photo_bytes=img_bytes)
+            else:
+                await deliver(context.bot.send_photo, dict(base, photo=file_id))
+
+        elif media_fid:
+            caption = wrap_plain_post(body_html, cfg, has_image=True) if text else None
+            sender = {
+                "document":   context.bot.send_document,
+                "video":      context.bot.send_video,
+                "animation":  context.bot.send_animation,
+                "video_note": context.bot.send_video_note,
+            }.get(media_kind, context.bot.send_document)
+            kwargs = {"chat_id": channel, "reply_markup": build_final_markup(cfg),
+                      "disable_notification": silent}
+            if media_kind != "video_note":
+                kwargs["caption"] = caption
+                kwargs["parse_mode"] = ParseMode.HTML if caption else None
+            key = media_kind if media_kind in ("document", "video", "animation",
+                                               "video_note") else "document"
+            kwargs[key] = media_fid
+            await deliver(sender, kwargs)
+
+        else:
+            if not body_html.strip():
+                return "error", "khali post"
+            await deliver(context.bot.send_message,
+                          dict(chat_id=channel, text=wrap_plain_post(body_html, cfg, has_image=False),
+                               parse_mode=ParseMode.HTML, disable_web_page_preview=True,
+                               reply_markup=build_final_markup(cfg), disable_notification=silent))
+
+        if dup_key:
+            mark_posted(uid, dup_key)
+        log_post(uid, "other", "", (text or "")[:80])
+        return "posted", "non-Amazon post"
+    except Exception as e:
+        logger.error(f"post_other fail ({uid}): {e}")
+        return "error", _friendly_error(e)
+
+
+# =============================================================================
+# QUEUE FLUSH — hourly job aur manual
+# =============================================================================
+def _interleave(amz_sorted: list, others: list) -> list:
+    if not others:
+        return amz_sorted
+    if not amz_sorted:
+        return others
+    out  = []
+    step = max(1, len(amz_sorted) // (len(others) + 1))
+    oi   = 0
+    for i, item in enumerate(amz_sorted):
+        out.append(item)
+        if oi < len(others) and (i + 1) % step == 0:
+            out.append(others[oi])
+            oi += 1
+    out.extend(others[oi:])
+    return out
+
+
+async def flush_queue(app, uid: int, reason: str = "hourly"):
+    """Ek user ki queue khali karo — fresh price laakar, sort karke, ek-ek post."""
+    lock = _flush_lock(uid)
+    if lock.locked():
+        logger.info(f"Flush ({uid}, {reason}) skip — pichhli batch chal rahi hai")
+        return
+
+    async with lock:
+        cfg = load_config(uid)
+        channel = str(cfg.get("channel", "")).strip()
+        if not channel:
+            return
+        if not is_active(uid):
+            purged = queue_purge_old(uid, 0)
+            if purged:
+                await dm_user(app.bot, uid,
+                              f"⏸️ Plan khatam hai, isliye queue ki {purged} post hata di.\n"
+                              f"/plan se plan le lo.")
+            return
+
+        purged = queue_purge_old(uid, QUEUE_MAX_AGE_HOURS)
+        items  = queue_fetch_all(uid)
+        if not items:
+            return
+
+        class _Ctx:
+            bot = app.bot
+        context = _Ctx()
+
+        amz_items = [i for i in items if i["kind"] == "amazon" and i.get("asin")]
+        oth_items = [i for i in items if i["kind"] == "other"]
+
+        dead, fresh = 0, {}
+        if amz_items:
+            fresh = await get_products_by_asins([i["asin"] for i in amz_items])
+
+        ready = []
+        for it in amz_items:
+            p = fresh.get(it["asin"])
+            if not p or not p.get("title") or p.get("deal_ends") == "khatam":
+                queue_delete(it["id"])
+                dead += 1
+                continue
+            it["product"] = p
+            ready.append(it)
+        ready.sort(key=lambda x: int(x["product"].get("discount_pct") or 0), reverse=True)
+        ordered = _interleave(ready, oth_items)
+
+        posted = dupes = errors = limited = 0
+        titles, last_err = [], ""
+
+        for idx, it in enumerate(ordered):
+            left = posts_left_today(uid)
+            if left is not None and left <= 0:
+                limited = len(ordered) - idx
+                for rest in ordered[idx:]:
+                    queue_delete(rest["id"])
+                break
+            try:
+                if it["kind"] == "amazon":
+                    status, detail, _ = await post_amazon_product(context, uid, it["product"], cfg)
+                else:
+                    status, detail = await post_other(context, uid, it["payload"], cfg)
+            except Exception as e:
+                logger.error(f"Flush item fail: {e}")
+                status, detail = "error", str(e)[:80]
+
+            if status == "posted":
+                posted += 1
+                queue_delete(it["id"])
+                if it["kind"] == "amazon" and len(titles) < 8:
+                    titles.append(detail)
+            elif status == "duplicate":
+                dupes += 1
+                queue_delete(it["id"])
+            else:
+                errors += 1
+                last_err = detail
+                if queue_bump_tries(it["id"]) >= MAX_POST_TRIES:
+                    queue_delete(it["id"])
+
+            if idx < len(ordered) - 1:
+                await asyncio.sleep(POST_GAP_SECONDS)
+
+        lines = [f"📤 <b>Batch bhej di</b> — {hhmm(now_local())}\n",
+                 f"✅ Post  : <b>{posted}</b>"]
+        for t in titles:
+            lines.append(f"   • {html_lib.escape(t[:50])}")
+        if dupes:
+            lines.append(f"🔁 Pehle post ho chuki (skip) : {dupes}")
+        if dead:
+            lines.append(f"💀 Deal khatam / data nahi : {dead}")
+        if errors:
+            lines.append(f"❌ Fail : {errors}")
+            if last_err:
+                lines.append(f"   <i>{html_lib.escape(last_err)}</i>")
+        if limited:
+            lines.append(f"🚫 Aaj ki limit poori — {limited} post chhod di")
+        if purged:
+            lines.append(f"🗑️ {QUEUE_MAX_AGE_HOURS} ghante se purani hata di : {purged}")
+        await dm_user(app.bot, uid, "\n".join(lines), parse_mode=ParseMode.HTML,
+                      disable_web_page_preview=True)
+
+
+# =============================================================================
+# AMAZON LINK CLASSIFICATION
+# =============================================================================
+async def classify_amazon_urls(urls: list) -> dict:
+    """ASIN check PEHLE — search se nikla product link product hi hai."""
+    products, searches, unknown = [], [], []
+    seen = set()
+    for url in urls:
+        try:
+            resolved = await resolve_amazon_url(url)
+        except Exception as e:
+            logger.error(f"Resolve fail ({url[:50]}): {e}")
+            resolved = url
+        asin = extract_asin(resolved) or extract_asin(url)
+        if asin:
+            if asin in seen:
+                continue
+            seen.add(asin)
+            products.append({"url": url, "resolved": resolved, "asin": asin})
+        elif is_amazon_search_url(resolved) or is_amazon_search_url(url):
+            searches.append(url)
+        else:
+            unknown.append(url)
+    return {"products": products, "searches": searches, "unknown": unknown}
+
+
+# =============================================================================
+# CORE PROCESSOR
+# =============================================================================
+def _msg_payload(msg, text: str, entities) -> dict:
+    p = {"text": text, "entities": ents_to_json(entities)}
+    if msg.photo:
+        p["photo_file_id"] = msg.photo[-1].file_id
+    elif msg.document:
+        p["media_file_id"], p["media_kind"] = msg.document.file_id, "document"
+    elif msg.video:
+        p["media_file_id"], p["media_kind"] = msg.video.file_id, "video"
+    elif msg.animation:
+        p["media_file_id"], p["media_kind"] = msg.animation.file_id, "animation"
+    elif msg.video_note:
+        p["media_file_id"], p["media_kind"] = msg.video_note.file_id, "video_note"
+    return p
+
+
+def setup_problems(cfg: dict) -> list:
+    """Post karne se pehle kya-kya set hona baaki hai."""
+    probs = []
+    if not (cfg.get("tag") or "").strip():
+        probs.append("🏷️ Affiliate tag set nahi hai — /tag")
+    if not str(cfg.get("channel") or "").strip():
+        probs.append("📢 Post channel set nahi hai — /channel")
+    return probs
+
+
+async def process_and_post(context, uid: int, msg, notify, cfg=None,
+                           source_tag: str = "", allow_park: bool = False):
+    if msg.caption is not None:
+        raw_plain, raw_entities = msg.caption or "", list(msg.caption_entities or [])
+        has_photo = True
+    elif msg.text:
+        raw_plain, raw_entities = msg.text or "", list(msg.entities or [])
+        has_photo = False
+    else:
+        raw_plain, raw_entities = "", []
+        has_photo = bool(msg.photo)
+
+    all_urls    = extract_urls(raw_plain) + hidden_link_urls(raw_entities)
+    amazon_urls = get_amazon_urls(all_urls)
+
+    if not raw_plain.strip() and not all_urls and not has_photo and not (
+            msg.document or msg.video or msg.animation or msg.video_note):
+        await notify("⚠️ Message mein koi text ya link nahi mila.")
+        return
+
+    if cfg is None:
+        cfg = load_config(uid)
+    probs = setup_problems(cfg)
+    if probs:
+        await notify("⚠️ <b>Pehle setup poora karo:</b>\n\n" + "\n".join(probs),
+                     parse_mode=ParseMode.HTML)
+        return
+
+    channel = str(cfg.get("channel", "")).strip()
+    tag     = cfg.get("tag", "")
+    shown_channel = cfg.get("channel_title") or channel
+
+    left = posts_left_today(uid)
+    if left is not None and left <= 0:
+        await notify(f"🚫 <b>Aaj ki limit poori</b> ({DAILY_POST_LIMIT} post/din).\n"
+                     f"Kal phir se post kar paoge.", parse_mode=ParseMode.HTML)
+        return
+
+    parking = allow_park and cfg.get("park_post", False)
+
+    # ==========================================================================
+    # AMAZON
+    # ==========================================================================
+    if amazon_urls:
+        wait_msg = await notify("⏳ Amazon links check ho rahe hain...")
+        buckets  = await classify_amazon_urls(amazon_urls)
+        products = buckets["products"]
+        searches = buckets["searches"]
+        unknown  = buckets["unknown"]
+
+        # Setting ON hai to search/deals page bhi normal post ki tarah jaayega
+        if cfg.get("search_links") and searches:
+            unknown, searches = unknown + searches, []
+
+        if not products and not unknown:
+            await _edit_or_notify(
+                wait_msg, notify,
+                f"🚫 <b>Skip!</b> Sirf Amazon search/deals page mile ({len(searches)}) — "
+                f"kuch post nahi kiya.\n<i>Ye bhi post karne hain to /settings mein "
+                f"'Search Links' ON karo.</i>", parse_mode=ParseMode.HTML)
+            return
+
+        if products:
+            cap = MAX_PER_MESSAGE if left is None else min(MAX_PER_MESSAGE, left)
+            if len(products) > cap:
+                await notify(f"⚠️ {len(products)} products mile — pehle {cap} liye.")
+                products = products[:cap]
+
+            # ── PARK MODE ─────────────────────────────────────────────────
+            if parking:
+                added = sum(1 for p in products if queue_add_amazon(uid, p["asin"]))
+                skip  = len(products) - added
+                amz_n, oth_n = queue_counts(uid)
+                lines = [f"🅿️ <b>{added} deal queue mein daal di.</b>"]
+                if skip:
+                    lines.append(f"🔁 {skip} pehle se queue mein thi.")
+                if searches:
+                    lines.append(f"🚫 {len(searches)} search page chhod diye.")
+                lines.append(f"\n📋 Queue: {amz_n} Amazon + {oth_n} other")
+                lines.append(f"🕐 Agli batch: <b>{next_batch_label()}</b>")
+                await _edit_or_notify(wait_msg, notify, "\n".join(lines),
+                                      parse_mode=ParseMode.HTML)
+                return
+
+            # ── INSTANT ───────────────────────────────────────────────────
+            fetched = await get_products_by_asins([p["asin"] for p in products])
+
+            posted, dupes, errors = [], [], []
+            note, all_skipped = "", set()
+
+            live = [fetched[p["asin"]] for p in products if p["asin"] in fetched]
+            live.sort(key=lambda x: int(x.get("discount_pct") or 0), reverse=True)
+            nodata = [p["asin"] for p in products if p["asin"] not in fetched]
+
+            for i, prod in enumerate(live):
+                status, detail, n = await post_amazon_product(context, uid, prod, cfg)
+                if status == "posted":
+                    posted.append(detail)
+                    note = note or n
+                    _, sk = build_amazon_caption(prod, make_affiliate_url(prod.get("asin", ""), tag),
+                                                 cfg, has_image=bool(n))
+                    all_skipped.update(sk)
+                elif status == "duplicate":
+                    dupes.append(detail)
+                else:
+                    errors.append(detail)
+                if i < len(live) - 1:
+                    await asyncio.sleep(POST_GAP_SECONDS)
+
+            # Single product + data nahi mila → original text user ke tag ke saath
+            if len(products) == 1 and not posted and nodata:
+                asin  = products[0]["asin"]
+                cp, ce = remove_footer(raw_plain, raw_entities)
+                # Saare Amazon links (dikhne wale + chhupe hue) pe user ka tag
+                cp, ce = await replace_amazon_links(cp, ce, amazon_urls, tag)
+                body   = entities_to_html(cp, ce)
+                try:
+                    await deliver(context.bot.send_message,
+                                  dict(chat_id=channel, text=wrap_plain_post(body, cfg, has_image=False),
+                                       parse_mode=ParseMode.HTML, disable_web_page_preview=True,
+                                       reply_markup=build_final_markup(cfg, asin=asin),
+                                       disable_notification=cfg.get("silent", True)))
+                    log_post(uid, "amazon", asin, cp[:80])
+                    await _edit_or_notify(
+                        wait_msg, notify,
+                        "✅ <b>Post ho gaya!</b>\n"
+                        "⚠️ Amazon se product details nahi mili — original text tumhare "
+                        f"affiliate link ke saath bheja.\n📢 <b>{html_lib.escape(shown_channel)}</b>"
+                        + source_tag, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+                except Exception as e:
+                    await _edit_or_notify(wait_msg, notify,
+                                          f"❌ <b>Post nahi hua!</b>\n{html_lib.escape(_friendly_error(e))}",
+                                          parse_mode=ParseMode.HTML)
+                return
+
+            bell = "🔕 Silent" if cfg.get("silent", True) else "🔔 Loud"
+            lines = []
+            if len(posted) == 1 and not dupes and not nodata and not errors:
+                lines.append("✅ <b>Amazon Deal Post Ho Gaya!</b>")
+                lines.append(f"🖼️ Image: {note}" if note else "🖼️ Image nahi — text post kiya.")
+            else:
+                lines.append(f"✅ <b>{len(posted)} deal post ho gayi!</b>"
+                             if posted else "⚠️ <b>Koi deal post nahi hui.</b>")
+                for t in posted[:8]:
+                    lines.append(f"   • {html_lib.escape(t[:50])}")
+                if note:
+                    lines.append(f"🖼️ Image: {note}")
+            if dupes:
+                lines.append(f"\n🔁 {len(dupes)} pehle hi post ho chuki thi (24 ghante mein)")
+            if nodata:
+                lines.append(f"⚠️ {len(nodata)} ka data Amazon se nahi mila")
+            if errors:
+                lines.append(f"❌ {len(errors)} fail — {html_lib.escape(errors[0])}")
+            if searches:
+                lines.append(f"🚫 {len(searches)} search page chhod diye")
+            if all_skipped:
+                names = ", ".join(FIELD_LABELS.get(k, k) for k in all_skipped)
+                lines.append(f"\n✂️ Post mein jagah kam thi, ye cheezein chhoot gayi: "
+                             f"<b>{html_lib.escape(names)}</b>\n"
+                             f"<i>/amz_post se kuch band kar do.</i>")
+            lines.append(f"\n🔔 {bell}")
+            lines.append(f"📢 <b>{html_lib.escape(shown_channel)}</b>")
+            if source_tag:
+                lines.append(source_tag.strip())
+            await _edit_or_notify(wait_msg, notify, "\n".join(lines), parse_mode=ParseMode.HTML,
+                                  disable_web_page_preview=True)
+            return
+
+        # ── Sirf unknown / search Amazon links ────────────────────────────
+        cp, ce = remove_footer(raw_plain, raw_entities)
+        cp, ce = await replace_amazon_links(cp, ce, amazon_urls, tag)
+        payload = _msg_payload(msg, cp, ce)
+        if parking:
+            queue_add_other(uid, payload)
+            await _edit_or_notify(wait_msg, notify, "🅿️ Queue mein daal diya.", parse_mode=ParseMode.HTML)
+            return
+        status, detail = await post_other(context, uid, payload, cfg)
+        if status == "posted":
+            note = f"\n🚫 {len(searches)} search page chhod diye." if searches else ""
+            await _edit_or_notify(wait_msg, notify, "✅ <b>Post ho gaya!</b>\n<i>Link pe tumhara affiliate tag laga diya.</i>"
+                         + note + f"\n📢 <b>{html_lib.escape(shown_channel)}</b>" + source_tag,
+                         parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+        elif status == "duplicate":
+            await _edit_or_notify(wait_msg, notify, f"⚠️ <b>Pehle post ho chuka hai!</b> {html_lib.escape(detail)} — skip kiya.",
+                         parse_mode=ParseMode.HTML)
+        else:
+            await _edit_or_notify(wait_msg, notify, f"❌ <b>Post nahi hua!</b>\n{html_lib.escape(detail)}",
+                         parse_mode=ParseMode.HTML)
+        return
+
+    # ==========================================================================
+    # NON-AMAZON
+    # ==========================================================================
+    cp, ce  = remove_footer(raw_plain, raw_entities)
+    payload = _msg_payload(msg, cp, ce)
+
+    if parking:
+        queue_add_other(uid, payload)
+        amz_n, oth_n = queue_counts(uid)
+        await notify(f"🅿️ <b>Queue mein daal diya.</b>\n\n"
+                     f"📋 Queue: {amz_n} Amazon + {oth_n} other\n"
+                     f"🕐 Agli batch: <b>{next_batch_label()}</b>",
+                     parse_mode=ParseMode.HTML)
+        return
+
+    status, detail = await post_other(context, uid, payload, cfg)
+    bell = "🔕 Silent" if cfg.get("silent", True) else "🔔 Loud"
+    if status == "posted":
+        await notify(f"✅ <b>Post ho gaya!</b>\n🔔 {bell}\n"
+                     f"📢 <b>{html_lib.escape(shown_channel)}</b>" + source_tag,
+                     parse_mode=ParseMode.HTML)
+    elif status == "duplicate":
+        await notify(f"⚠️ <b>Pehle post ho chuka hai!</b> {html_lib.escape(detail)} — skip kiya.",
+                     parse_mode=ParseMode.HTML)
+    else:
+        await notify(f"❌ <b>Post nahi hua!</b>\n{html_lib.escape(detail)}",
+                     parse_mode=ParseMode.HTML)

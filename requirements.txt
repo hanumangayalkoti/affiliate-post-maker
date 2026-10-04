@@ -1,0 +1,5 @@
+python-telegram-bot[job-queue,rate-limiter]==20.7
+aiohttp>=3.9.0
+psycopg2-binary>=2.9.0
+Pillow>=10.0.0
+tzdata>=2024.1
