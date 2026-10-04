@@ -6,6 +6,13 @@ sundar deal posts mein badal sakta hai. Plan paid hai (Razorpay / Telegram
 Stars), admin ke paas poora control hai.
 """
 import os
+
+# Railway template mein jo value nahi bhari ("PASTE_HERE") use khaali maano —
+# baaki saari files import hone se PEHLE, kyunki wo env yahin se padhti hain.
+for _k, _v in list(os.environ.items()):
+    if _v.strip().upper() in ("PASTE_HERE", "PASTE HERE", "CHANGE_ME"):
+        del os.environ[_k]
+
 import time
 import logging
 import html as html_lib
