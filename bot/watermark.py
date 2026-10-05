@@ -12,17 +12,16 @@ from card import draw_watermark
 logger = logging.getLogger(__name__)
 
 
-def apply_watermark(image_bytes: bytes, text: str, position: str = "bottom_right",
-                    font_key: str = "poppins") -> bytes:
+def apply_watermark(image_bytes: bytes, wm: dict, font_key: str = "poppins") -> bytes:
     """
-    Photo pe watermark lagao. Watermarked JPEG bytes wapas.
-    Kuch bhi gadbad ho to original photo hi wapas.
+    Photo pe watermark lagao (wm = task ki watermark setting).
+    Watermarked JPEG bytes wapas. Kuch bhi gadbad ho to original photo hi wapas.
     """
-    if not text:
+    if not (wm or {}).get("text"):
         return image_bytes
     try:
         img = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
-        img = draw_watermark(img, text, position, font_key)
+        img = draw_watermark(img, wm, font_key)
         output = io.BytesIO()
         img.convert("RGB").save(output, format="JPEG", quality=92)
         return output.getvalue()

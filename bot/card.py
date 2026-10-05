@@ -12,7 +12,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 logger = logging.getLogger(__name__)
 
-FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
+FONT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "fonts")
 
 # key: (naam, bold file, semibold file)
 FONTS = {
@@ -22,6 +22,17 @@ FONTS = {
     "bebas":      ("Bebas Neue", "BebasNeue-Regular.ttf", "BebasNeue-Regular.ttf"),
 }
 FALLBACK_FONT = "poppins"      # Hindi wagaira isme dikh jaata hai
+
+FONTS_OK = os.path.exists(os.path.join(FONT_DIR, FONTS[FALLBACK_FONT][1]))
+if not FONTS_OK:
+    logger.error(f"fonts/ folder nahi mila ({FONT_DIR}) — card mein ₹ ki jagah 'Rs.' aayega. "
+                 "GitHub pe fonts/ folder upload karo.")
+
+
+def _money(text: str) -> str:
+    """Font na ho to default font mein ₹ dabba ban jaata hai — tab 'Rs.' likho."""
+    text = (text or "").strip()
+    return text if FONTS_OK else text.replace("₹", "Rs.")
 
 LAYOUTS = {
     "square":   ("Square 1:1",    (1080, 1080)),
@@ -306,33 +317,71 @@ def _draw_rating(img, cx, cy, max_w, size, fonts_key, rating, theme):
 # =============================================================================
 # WATERMARK (card aur normal photo dono ke liye)
 # =============================================================================
-def draw_watermark(img: Image.Image, text: str, position: str = "bottom_right",
-                   font_key: str = "poppins", dark_text: bool = True) -> Image.Image:
+WM_SIZES = {"s": ("Small", 1.0), "m": ("Medium", 1.4), "l": ("Large", 1.85)}
+
+WM_COLORS = {
+    "white":  ("⚪ White",  (255, 255, 255)),
+    "black":  ("⚫ Black",  (20, 20, 20)),
+    "red":    ("🔴 Red",    (229, 40, 40)),
+    "yellow": ("🟡 Yellow", (255, 214, 10)),
+    "blue":   ("🔵 Blue",   (30, 99, 214)),
+    "green":  ("🟢 Green",  (30, 140, 60)),
+}
+
+DEFAULT_WM = {"enabled": False, "text": "", "position": "bottom_right", "size": "s", "color": "white"}
+
+
+def clean_watermark(wm) -> dict:
+    out = dict(DEFAULT_WM)
+    if isinstance(wm, dict):
+        out["enabled"] = bool(wm.get("enabled"))
+        out["text"] = str(wm.get("text") or "")[:40]
+        if wm.get("position") in WM_POSITIONS:
+            out["position"] = wm["position"]
+        if wm.get("size") in WM_SIZES:
+            out["size"] = wm["size"]
+        if wm.get("color") in WM_COLORS:
+            out["color"] = wm["color"]
+    return out
+
+
+def _is_light(c) -> bool:
+    return (0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]) > 150
+
+
+def draw_watermark(img: Image.Image, wm: dict, font_key: str = "poppins") -> Image.Image:
     """
+    wm = {"text", "position", "size", "color"}.
     'top' → photo ke upar beech mein saaf text (jaise "Posted On ...").
-    Baaki → semi-transparent kaala box + safed text.
+    Baaki → semi-transparent box + text (box ka rang text ke ulta).
     img RGBA hona chahiye. Naya RGBA image wapas.
     """
-    text = (text or "").strip()
+    wm = clean_watermark(dict(wm or {}, enabled=True))
+    text = wm["text"].strip()
     if not text:
         return img
     W, H = img.size
-    position = position if position in WM_POSITIONS else "bottom_right"
+    position = wm["position"]
+    k = WM_SIZES[wm["size"]][1]
+    color = WM_COLORS[wm["color"]][1]
+    light = _is_light(color)
     key = _font_for_text(font_key, text)
     probe = ImageDraw.Draw(img)
 
     if position == "top":
-        size = max(18, min(46, int(W * 0.032)))
-        f = _fit(probe, key, text, W * 0.9, size)
-        probe.text((W / 2, max(10, H * 0.022)), text, font=f,
-                   fill=(25, 25, 25) if dark_text else (245, 245, 245), anchor="mt")
+        size = int(max(18, min(46, W * 0.032)) * k)
+        f = _fit(probe, key, text, W * 0.92, size)
+        outline = (30, 30, 30) if light else (255, 255, 255)
+        probe.text((W / 2, max(10, H * 0.022)), text, font=f, fill=color + (255,), anchor="mt",
+                   stroke_width=max(1, int(f.size * 0.06)) if light else 0,
+                   stroke_fill=outline + (255,))
         return img
 
-    size = max(18, min(40, int(W * 0.035)))
-    f = _fit(probe, key, text, W * 0.6, size)
+    size = int(max(18, min(40, W * 0.035)) * k)
+    f = _fit(probe, key, text, W * 0.8, size)
     b = probe.textbbox((0, 0), text, font=f)
     tw, th = b[2] - b[0], b[3] - b[1]
-    pad_x, pad_y, margin = int(size * 0.5), int(size * 0.3), int(W * 0.018) + 4
+    pad_x, pad_y, margin = int(f.size * 0.5), int(f.size * 0.3), int(W * 0.018) + 4
     bw, bh = tw + pad_x * 2, th + pad_y * 2
     if position == "bottom_left":
         x1, y1 = margin, H - bh - margin
@@ -341,12 +390,13 @@ def draw_watermark(img: Image.Image, text: str, position: str = "bottom_right",
     else:
         x1, y1 = W - bw - margin, H - bh - margin
 
+    box = (0, 0, 0, 165) if light else (255, 255, 255, 200)
     overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
     ImageDraw.Draw(overlay).rounded_rectangle([x1, y1, x1 + bw, y1 + bh],
-                                              radius=int(size * 0.3), fill=(0, 0, 0, 165))
+                                              radius=int(f.size * 0.3), fill=box)
     img = Image.alpha_composite(img, overlay)
     ImageDraw.Draw(img).text((x1 + pad_x - b[0], y1 + pad_y - b[1]), text, font=f,
-                             fill=(255, 255, 255, 255))
+                             fill=color + (255,))
     return img
 
 
@@ -383,15 +433,15 @@ def render_card(photo_bytes: bytes, product: dict, card: dict, wm: dict = None) 
         img = Image.new("RGBA", (W, H), theme[1] + (255,))
         d = ImageDraw.Draw(img)
 
-        wm = wm or {}
-        wm_text = (wm.get("text") or "").strip() if wm.get("enabled") else ""
-        wm_pos = wm.get("position") or "bottom_right"
+        wm = clean_watermark(wm)
+        wm_text = wm["text"].strip() if wm["enabled"] else ""
+        wm_pos = wm["position"]
         top_pad = int(H * 0.075) if (wm_text and wm_pos == "top") else int(H * 0.04)
         margin = int(min(W, H) * 0.04)
 
         # ── Info column me kya-kya hai ────────────────────────────────────
-        price = (product.get("deal_price") or "").strip()
-        mrp = (product.get("actual_price") or "").strip()
+        price = _money(product.get("deal_price"))
+        mrp = _money(product.get("actual_price"))
         try:
             pct = int(product.get("discount_pct") or 0)
         except (TypeError, ValueError):
@@ -462,7 +512,9 @@ def render_card(photo_bytes: bytes, product: dict, card: dict, wm: dict = None) 
                 y += h + gap * k
 
         if wm_text:
-            img = draw_watermark(img, wm_text, wm_pos, fk, dark_text=card["theme"] != "dark")
+            if wm_pos == "top" and wm["color"] == "white" and card["theme"] != "dark":
+                wm = dict(wm, color="black")      # safed card pe safed text na dikhe
+            img = draw_watermark(img, wm, fk)
 
         out = io.BytesIO()
         img.convert("RGB").save(out, format="JPEG", quality=92)

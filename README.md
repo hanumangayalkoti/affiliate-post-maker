@@ -1,129 +1,99 @@
 # Deal Post Maker Bot
 
-DealsKoti Master Bot ka public version. Koi bhi user apna Amazon affiliate tag aur
-apna channel set karke Amazon links ko sundar deal posts mein badal sakta hai.
-Plan paid hai (₹100 / 30 din), admin ke paas poora control hai.
+*Made by Affiliates, for Affiliates*
 
-## Kya-kya hai
+Telegram bot jo Amazon (aur baaki) deals ko sundar posts mein badal ke aapke
+channel pe daalta hai — har link pe user ka apna affiliate tag. English aur
+Hinglish dono mein, "aap" wali izzat ke saath.
 
-**Purane saare features (har user ke liye alag):** DM se post, draft channel se auto
-pickup, multi-link = alag-alag post, search page skip, 24 ghante duplicate check,
-park mode (har ghante batch), detailed/minimal post, har field on/off, header,
-footer, watermark, Buy Now / Add to Cart / 2 custom buttons, silent posting.
+## Plans
 
-**Naya:**
-- Har user ka apna affiliate tag — har link aur button mein usi ka tag lagta hai
-- Channel jodna aasaan: bot ko channel mein admin banao, bot khud poochta hai
-  (user us channel ka admin hona chahiye — koi dusre ka channel nahi le sakta)
-- Search Links on/off (har user apne liye)
-- Price Drop Alerts: `/track link [target]` — price gire to message, ya seedha
-  channel pe post (Auto-Post setting)
-- Stats: aaj / 7 din / 30 din / total posts
-- Plan: Razorpay (UPI/Card, automatic) + Telegram Stars (automatic)
-- Plan khatam hone se 2 din pehle aur khatam hone pe reminder
-- Admin panel: stats, revenue, user search, din jodo/kaato, plan khatam, block,
-  user ko message, broadcast
-- Amazon API bachat: product data 30 minute cache — 10 channel same deal daalein
-  to API sirf 1 baar call hoti hai. Data 5 din tak DB mein rehta hai.
-- Daily post limit (default 300/din) taaki koi API ko over-use na kare
+| | 🥉 Basic | 🥈 Pro | 🥇 Premium |
+|---|---|---|---|
+| Price / 30 din | ₹50 | ₹100 | ₹250 |
+| Tasks | 1 | 2 | 5 |
+| Posts / din | 200 | 500 | 1200 |
+| Image Card | ❌ | ✅ | ✅ |
 
-**Image Card (`/card`) — har user ka apna design:**
-- White/theme background, ek taraf product photo, doosri taraf Offer Price badge,
-  Discount gola, MRP (kata hua) aur Rating — har cheez alag ON/OFF
-- Size: Square 1:1 / Wide 16:9 / Portrait 4:5 · Photo: Small/Medium/Large, Left/Right
-- Theme: White / Light Grey / Yellow / Dark · Font: Poppins / Montserrat / Roboto / Bebas Neue
-- Offer Price shape: Zig-zag / Gola / Box / Ribbon · Price aur Discount ke 8-8 rang
-- 👁️ Preview (user ki latest post ke product se) aur ↩️ Default pe wapas
-- Card na ban paaye to post rukti nahi — normal photo chali jaati hai
+- Naye user ko **7 din Pro free** (ek hi baar)
+- Plan badalne pe bache din ki keemat naye plan mein judti hai
+- Chhote plan pe extra tasks **pause** hote hain (delete nahi) — user chunta hai kaunsa chale
+- Payment: Razorpay (UPI/Card, automatic) + Telegram Stars (INR ke barabar)
+- Plan / trial expiry, daily limit reset, reminders — sab **raat 12 baje (IST)**
 
-**Watermark:** ek hi setting, card aur normal photo dono pe. Jagah: Upar beech
-(jaise "Posted On ..."), Neeche right, Neeche left, Beech mein.
+## Features
 
-**Post buttons ka rang:** Buy Now, Add to Cart, Button 1/2 — har button ⚪ Normal /
-🟢 Hara / 🔵 Neela / 🔴 Laal.
-
-**Force Join:** `FORCE_JOIN_CHANNEL` set ho to user ko pehle channel join karna
-padta hai, phir "✅ Maine join kar liya". Bot ko us channel mein admin banana zaroori.
-
-Saari settings PostgreSQL (`user_config`) mein save hoti hain — crash / redeploy
-pe kuch nahi khota.
+- **Gate:** pehle language (English / Hinglish), phir "📢 Join Update Channel"
+- **Tasks:** har task = 1 Draft ➜ 1 Destination + apni saari settings. ⭐ Default
+  task DM wali deals sambhalta hai. Same channel do tasks mein ho ya ek ka
+  Destination doosre ka Draft ho to bot user ko batata hai (rokta nahi)
+- **Har task ki settings:** affiliate tag, Destination, Draft, Kaun Si Posts
+  (🛍️ Amazon / 📝 Non-Amazon), ♻️ Duplicate check (Amazon = product, baaki =
+  caption ya photo), post details, buttons (har button ka rang), header/footer,
+  notification, search links
+- **🎨 Image Card** (Pro+): product photo + Offer Price + Discount + MRP + Rating;
+  size, photo size/side, theme, 4 font, badge shape, rang; 👁️ Preview, ↩️ Reset
+- **💧 Watermark:** text, jagah (upar beech / neeche right / left / beech),
+  size (Small / Medium / Large), rang
+- **Chat clean:** naya command aane pe pichle commands aur unke jawab delete.
+  Reports (payment, task bana, post report) kabhi delete nahi
+- **FAQ:** 15 aam sawaal, number buttons se
+- **Admin panel (inline):** users ki list (filter + pages + 1-10 number), user
+  card (plan, tasks, din jodo/kaato, tier badlo, block, message), payments,
+  broadcast, Amazon API test. Admin ko har zaroori cheez ki khabar
+- Saari settings PostgreSQL mein — crash / restart / redeploy pe kuch nahi khota
 
 ## Environment Variables (Railway)
 
 | Variable | Zaroori | Kya hai |
 |---|---|---|
 | BOT_TOKEN | ✅ | Bot token |
-| ADMIN_ID | ✅ | Tumhara Telegram ID |
-| DATABASE_URL | ✅ | PostgreSQL (purana hi) |
-| CREDENTIAL_ID | ✅ | Amazon Creators API |
-| CREDENTIAL_SECRET | ✅ | Amazon Creators API |
-| PARTNER_TAG | ✅ | Tumhara tag (API ke liye + tumhari posts ke liye) |
-| CREDENTIAL_VERSION | ❌ | default 3.2 |
-| MARKETPLACE | ❌ | default www.amazon.in |
-| ADMIN_IDS | ❌ | Aur admins, comma se (jaise `123,456`) |
-| FORCE_JOIN_CHANNEL | ❌ | Jaise `@dealskoti` — khaali = force join band |
+| ADMIN_ID | ✅ | Aapka Telegram ID |
+| DATABASE_URL | ✅ | PostgreSQL |
+| CREDENTIAL_ID / CREDENTIAL_SECRET | ✅ | Amazon Creators API |
+| PARTNER_TAG | ✅ | Aapka tag (API ke liye) |
+| FORCE_JOIN_CHANNEL | ❌ | Jaise `@dealskoti` — khaali = gate mein join band |
 | FORCE_JOIN_NAME | ❌ | Join message mein channel ka naam |
-| FORCE_JOIN_LINK | ❌ | Private channel ka invite link (tab CHANNEL mein -100 ID) |
-| BOT_NAME | ❌ | default "Deal Post Maker" |
-| SUPPORT_USERNAME | ❌ | Support ke liye username (bina @ bhi chalega) |
-| RAZORPAY_KEY_ID | ❌ | Razorpay key — teeno Razorpay wale na ho to UPI button chhupa rahega |
-| RAZORPAY_KEY_SECRET | ❌ | Razorpay secret |
-| RAZORPAY_WEBHOOK_SECRET | ❌ | Webhook banate waqt jo secret daala |
-| RAZORPAY_WEBHOOK_PATH | ❌ | default /webhooks/razorpay |
+| FORCE_JOIN_LINK | ❌ | Private channel ka invite link |
+| RAZORPAY_KEY_ID / KEY_SECRET / WEBHOOK_SECRET | ❌ | Teeno na hon to UPI button chhupa |
 | STARS_ENABLED | ❌ | default true |
-| PRICE_INR | ❌ | default 100 |
-| PRICE_STARS | ❌ | default 90 |
-| PLAN_DAYS | ❌ | default 30 |
-| DAILY_POST_LIMIT | ❌ | default 300 (0 = koi limit nahi) |
-| CACHE_FRESH_MINUTES | ❌ | default 30 |
-| CACHE_KEEP_DAYS | ❌ | default 5 |
-| PRICE_CHECK_MINUTES | ❌ | default 60 |
-| MIN_DROP_PCT | ❌ | default 5 (itna % gire tab alert) |
-| MAX_WATCHES | ❌ | default 25 products per user |
-| WATCH_DAYS | ❌ | default 30 din baad tracking band |
-| TZ_NAME | ❌ | default Asia/Kolkata |
+| PRICE_BASIC / PRO / PREMIUM | ❌ | default 50 / 100 / 250 |
+| STARS_BASIC / PRO / PREMIUM | ❌ | default 50 / 100 / 250 |
+| DAILY_BASIC / PRO / PREMIUM | ❌ | default 200 / 500 / 1200 |
+| PLAN_DAYS / TRIAL_DAYS | ❌ | default 30 / 7 |
+| ADMIN_IDS | ❌ | Aur admins, comma se |
+| BOT_NAME / SUPPORT_USERNAME | ❌ | |
+| CACHE_FRESH_MINUTES / CACHE_KEEP_DAYS / TZ_NAME | ❌ | 30 / 5 / Asia/Kolkata |
 
-## Razorpay webhook setup (ek baar)
+## Razorpay webhook
 
-1. Railway → service → Settings → Networking → **Generate Domain**
-2. Razorpay Dashboard → Settings → Webhooks → **Add New Webhook**
-   - URL: `https://<railway-domain>/webhooks/razorpay` (sirf domain bhi chalega)
-   - Secret: kuch bhi strong (yahi `RAZORPAY_WEBHOOK_SECRET` mein daalo)
-   - Events: `payment_link.paid` aur `payment.captured`
-3. Auto Forwarder bot wala webhook bhi chalta rahega — dono apne-apne payment
-   pehchaan lete hain, ek-dusre ka ignore karte hain.
+Razorpay Dashboard → Webhooks → URL: `https://<railway-domain>` (sirf domain ya
+`/webhooks/razorpay`), event `payment_link.paid`, secret = `RAZORPAY_WEBHOOK_SECRET`.
 
-## Telegram Stars
-
-Kuch setup nahi. Stars bot ke balance mein aate hain — @BotFather → bot →
-Payments / Stars balance se Fragment pe withdraw.
-
-## Purana data
-
-Pehli baar start hote hi purani admin config (channel, draft, header, watermark,
-buttons) apne aap admin (ADMIN_ID) ke account mein chali jaati hai. Admin ko plan
-ki zaroorat nahi.
-
-## Files
+## Folders
 
 ```
-main.py         — start, menu, help, DM / channel handlers, jobs
-engine.py       — posting engine
-settings_ui.py  — user settings
-billing.py      — plan, Razorpay, Stars, webhook server
-admin.py        — admin panel
-price_watch.py  — price drop alerts
-users.py        — users, plan expiry, payments
-storage.py      — database tables + user settings
-database.py     — duplicate, queue, cache, stats, price watch
-amazon_api.py   — Amazon API + cache + user tag links
-caption.py      — post caption
-card.py         — image card + watermark drawing
-card_ui.py      — Image Card settings (/card)
-gate.py         — force join
-ui.py           — rangeen buttons
-watermark.py    — normal photo pe watermark
-fonts/          — card ke fonts (OFL / Apache license)
+bot/                 — saara Python code (start: python bot/main.py)
+  main.py            — start, gate, home, DM / Draft handlers, raat 12 baje ka job
+  task_ui.py         — tasks aur har task ki settings
+  card_ui.py         — Image Card settings (har task ka)
+  card.py            — image card + watermark drawing
+  engine.py          — posting engine (task + tier ke hisaab se)
+  billing.py         — plans, Razorpay, Stars, webhook server
+  admin.py           — inline admin panel
+  faq.py             — 15 FAQ
+  gate.py            — language + force join
+  tiers.py           — plans, limits, upgrade credit, raat 12 baje ka hisaab
+  users.py           — users, plan, trial, payments
+  storage.py         — database tables, tasks, purane data ka migration
+  database.py        — duplicate, cache, stats
+  alerts.py          — admin ko khabar
+  ui.py              — rangeen buttons, language, chat clean
+  amazon_api.py      — Amazon API + cache + user tag links
+  caption.py         — post caption
+  watermark.py       — normal photo pe watermark
+assets/fonts/        — card ke fonts (OFL / Apache license)
+railway.json         — Railway start command + restart policy
 ```
 
-Start command: `python main.py`
+Start command: `python bot/main.py` (railway.json mein set hai)

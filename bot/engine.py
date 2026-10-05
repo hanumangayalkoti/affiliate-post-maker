@@ -1,8 +1,8 @@
 """
-engine.py — posting ka poora engine. Har function user_id leta hai, us user
-ki settings, uska channel aur uska affiliate tag use karta hai.
+engine.py — posting ka poora engine. Har post ek TASK ke hisaab se jaati hai:
+task ka Destination, uska affiliate tag, uski saari settings. User ke plan
+(tier) ki limit — daily messages aur Image Card — yahin lagti hai.
 """
-import os
 import io
 import re
 import html as html_lib
@@ -10,9 +10,9 @@ import asyncio
 import logging
 import aiohttp
 from collections import deque
-from datetime import datetime, timedelta
+from datetime import datetime
 
-from telegram import InlineKeyboardMarkup, InlineKeyboardButton, InputFile
+from telegram import InlineKeyboardMarkup, InputFile
 from telegram.constants import ParseMode
 from telegram.error import RetryAfter, TimedOut, NetworkError, Forbidden, BadRequest
 
@@ -22,25 +22,18 @@ from amazon_api import (
     make_affiliate_url, make_cart_url, get_short_affiliate_link,
 )
 from caption import build_amazon_caption, wrap_plain_post, FIELD_LABELS
-from database import (
-    is_duplicate, mark_posted, log_post, posts_today,
-    queue_add_amazon, queue_add_other, queue_fetch_all, queue_delete,
-    queue_bump_tries, queue_purge_old, queue_counts,
-)
-from storage import load_config
-from users import is_admin, is_active
+from database import is_duplicate, mark_posted, log_post, posts_today, normalise_caption
+from users import limits
 from watermark import apply_watermark
 from card import render_card
-from ui import btn
+from ui import btn, tr, chan
 
 logger = logging.getLogger(__name__)
+esc = html_lib.escape
 
 # Telegram channel limit ~20 msg/min. 4 second = 15/min — andar rehne ke liye.
-POST_GAP_SECONDS    = 4.0
-MAX_PER_MESSAGE     = 15
-QUEUE_MAX_AGE_HOURS = 4
-MAX_POST_TRIES      = 3
-DAILY_POST_LIMIT    = int(os.getenv("DAILY_POST_LIMIT", "300"))   # 0 = unlimited
+POST_GAP_SECONDS = 4.0
+MAX_PER_MESSAGE  = 15
 
 SELF_MARKER = "\u2063"        # invisible — bot apne message pehchanne ke liye
 
@@ -86,17 +79,6 @@ FOOTER_LINE_PATTERN = re.compile(
 
 _own_msg_ids = deque(maxlen=2000)
 _own_msg_set = set()
-
-# Har user ki ek hi batch ek waqt pe
-_flush_locks: dict = {}
-
-
-def _flush_lock(uid: int) -> asyncio.Lock:
-    lock = _flush_locks.get(uid)
-    if lock is None:
-        lock = _flush_locks[uid] = asyncio.Lock()
-    return lock
-
 
 def remember_own(m):
     if not m:
@@ -215,24 +197,6 @@ async def _delete_quiet(m):
             await m.delete()
         except Exception:
             pass
-
-
-def next_hour_delay() -> float:
-    now = now_local()
-    nxt = (now + timedelta(hours=1)).replace(minute=0, second=5, microsecond=0)
-    return max(10.0, (nxt - now).total_seconds())
-
-
-def next_batch_label() -> str:
-    nxt = (now_local() + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
-    return hhmm(nxt)
-
-
-def posts_left_today(uid: int):
-    """Aaj kitni post aur kar sakta hai. None = koi limit nahi."""
-    if is_admin(uid) or DAILY_POST_LIMIT <= 0:
-        return None
-    return max(0, DAILY_POST_LIMIT - posts_today(uid))
 
 
 # =============================================================================
@@ -447,29 +411,6 @@ def build_final_markup(config: dict, asin: str = ""):
     return InlineKeyboardMarkup(rows) if rows else None
 
 
-async def make_post_image(raw: bytes, product: dict, cfg: dict):
-    """
-    Amazon photo → post wali photo. Card ON hai to card (watermark andar hi),
-    warna seedhi photo + watermark. Returns (bytes, card_bana_ya_nahi).
-    Pillow ka kaam alag thread mein — bot baaki users ke liye ruke nahi.
-    """
-    card_cfg = cfg.get("card") or {}
-    wm = cfg.get("watermark", {})
-    if card_cfg.get("enabled"):
-        out = await asyncio.to_thread(render_card, raw, product, card_cfg, wm)
-        if out:
-            return out, True
-    if wm.get("enabled") and (wm.get("text") or "").strip():
-        out = await asyncio.to_thread(apply_watermark, raw, wm.get("text"),
-                                      wm.get("position", "bottom_right"),
-                                      card_cfg.get("font", "poppins"))
-        return out, False
-    return raw, False
-
-
-# =============================================================================
-# POSTING
-# =============================================================================
 async def _send_with_retry(coro_factory, tries: int = 3):
     last_err = None
     for attempt in range(tries):
@@ -493,14 +434,16 @@ async def _send_with_retry(coro_factory, tries: int = 3):
     return None
 
 
-def _friendly_error(e: Exception) -> str:
+def _friendly_error(e: Exception, lang: str = "hi") -> str:
     """Telegram ki error ko aam bhasha mein."""
     s = str(e)
     low = s.lower()
     if "chat not found" in low:
-        return "Channel nahi mila — channel dobara set karo (/channel)."
+        return tr(lang, "Destination channel not found — set it again in /tasks.",
+                  "Destination channel nahi mila — /tasks mein dobara set karein.")
     if "not enough rights" in low or "need administrator rights" in low or isinstance(e, Forbidden):
-        return "Bot ko channel mein admin nahi banaya ya 'Post Messages' permission band hai."
+        return tr(lang, "The bot is not an admin in the channel, or 'Post Messages' is OFF.",
+                  "Bot channel mein admin nahi hai, ya 'Post Messages' permission band hai.")
     return s[:150]
 
 
@@ -548,44 +491,71 @@ async def deliver(send_fn, kwargs: dict, photo_bytes: bytes = None, photo_name: 
             raise
 
 
-async def post_amazon_product(context, uid: int, product: dict, cfg: dict, force: bool = False):
+async def make_post_image(raw: bytes, product: dict, cfg: dict, allow_card: bool = True):
     """
-    Ek Amazon product user ke channel pe post karo.
+    Amazon photo → post wali photo. Card ON (aur plan mein allowed) hai to card
+    (watermark andar hi), warna seedhi photo + watermark. Returns (bytes, card_bana?).
+    Pillow ka kaam alag thread mein — bot baaki users ke liye ruke nahi.
+    """
+    card_cfg = cfg.get("card") or {}
+    wm = cfg.get("watermark", {})
+    if allow_card and card_cfg.get("enabled"):
+        out = await asyncio.to_thread(render_card, raw, product, card_cfg, wm)
+        if out:
+            return out, True
+    if wm.get("enabled") and (wm.get("text") or "").strip():
+        out = await asyncio.to_thread(apply_watermark, raw, wm, card_cfg.get("font", "poppins"))
+        return out, False
+    return raw, False
+
+
+def _wm_on(cfg: dict) -> bool:
+    wm = cfg.get("watermark", {})
+    return bool(wm.get("enabled") and (wm.get("text") or "").strip())
+
+
+# =============================================================================
+# POSTING
+# =============================================================================
+async def post_amazon_product(context, uid: int, task: dict, product: dict, lang: str = "hi"):
+    """
+    Ek Amazon product task ke Destination pe post karo.
     Returns (status, detail, note) — posted / duplicate / error
-    force=True → duplicate check skip (price drop wali post).
     """
+    cfg      = task["cfg"]
+    tid      = task["id"]
     asin     = product.get("asin", "")
     channel  = str(cfg.get("channel", "")).strip()
     tag      = cfg.get("tag", "")
     silent   = cfg.get("silent", True)
     detailed = cfg.get("amz_detailed", True)
     fields   = cfg.get("amz_fields", {})
-    wm       = cfg.get("watermark", {})
     title    = (product.get("title") or "").strip()
+    title_key = normalise_caption(title)
 
-    if not force:
-        dup, when = is_duplicate(uid, title or asin)
-        if dup:
-            return "duplicate", f"{title[:55] or asin} — {when}", ""
+    if cfg.get("dup_check", True):
+        for k in ("a:" + asin if asin else "", "t:" + title_key if title_key else ""):
+            dup, when = is_duplicate(uid, tid, k)
+            if dup:
+                return "duplicate", f"{title[:55] or asin} — {when}", ""
 
-    card_cfg = cfg.get("card") or {}
-    card_on  = bool(card_cfg.get("enabled"))
+    allow_card = limits(uid)["card"]
+    card_on    = allow_card and bool((cfg.get("card") or {}).get("enabled"))
     want_image = card_on or (detailed and fields.get("image", True))
     short_link = make_affiliate_url(asin, tag)
-    wm_on = wm.get("enabled") and (wm.get("text") or "").strip()
 
     img_bytes, used_card = None, False
     if want_image and product.get("image_url"):
         raw = await _download_image(product["image_url"])
         if raw:
-            img_bytes, used_card = await make_post_image(raw, product, cfg)
+            img_bytes, used_card = await make_post_image(raw, product, cfg, allow_card)
 
     caption, _ = build_amazon_caption(product, short_link, cfg, has_image=bool(img_bytes))
     markup = build_final_markup(cfg, asin=asin)
 
     note = ""
     if img_bytes:
-        note = ("Image Card" if used_card else "Amazon") + (" + Watermark" if wm_on else "")
+        note = ("Image Card" if used_card else "Amazon") + (" + Watermark" if _wm_on(cfg) else "")
 
     try:
         if img_bytes:
@@ -598,20 +568,32 @@ async def post_amazon_product(context, uid: int, product: dict, cfg: dict, force
                           dict(chat_id=channel, text=caption, parse_mode=ParseMode.HTML,
                                disable_web_page_preview=True, reply_markup=markup,
                                disable_notification=silent))
-        mark_posted(uid, title or asin)
-        log_post(uid, "amazon", asin, title)
+        if cfg.get("dup_check", True):
+            mark_posted(uid, tid, "a:" + asin if asin else "", "t:" + title_key if title_key else "")
+        log_post(uid, tid, "amazon", asin, title)
         return "posted", title or asin, note
     except Exception as e:
-        logger.error(f"Post fail {uid}/{asin}: {e}")
-        return "error", _friendly_error(e), ""
+        logger.error(f"Post fail {uid}/{tid}/{asin}: {e}")
+        return "error", _friendly_error(e, lang), ""
 
 
-async def post_other(context, uid: int, payload: dict, cfg: dict):
+def _other_dup_key(payload: dict) -> str:
+    """Non-Amazon duplicate — caption ke text se; text na ho to photo/video ki ID se."""
+    k = normalise_caption(payload.get("text") or "")
+    if k:
+        return "c:" + k
+    uid_ = payload.get("unique_id") or ""
+    return ("f:" + uid_) if uid_ else ""
+
+
+async def post_other(context, uid: int, task: dict, payload: dict, lang: str = "hi"):
     """Non-Amazon post. Returns (status, detail)."""
+    cfg     = task["cfg"]
+    tid     = task["id"]
     channel = str(cfg.get("channel", "")).strip()
     silent  = cfg.get("silent", True)
     wm      = cfg.get("watermark", {})
-    wm_on   = wm.get("enabled") and (wm.get("text") or "").strip()
+    font    = (cfg.get("card") or {}).get("font", "poppins")
 
     text       = payload.get("text") or ""
     entities   = ents_from_json(payload.get("entities"))
@@ -619,21 +601,19 @@ async def post_other(context, uid: int, payload: dict, cfg: dict):
     media_fid  = payload.get("media_file_id") or ""
     media_kind = payload.get("media_kind") or ""
 
-    dup_key = (text.strip() or file_id or media_fid)[:300]
+    dup_key = _other_dup_key(payload) if cfg.get("dup_check", True) else ""
     if dup_key:
-        dup, when = is_duplicate(uid, dup_key)
+        dup, when = is_duplicate(uid, tid, dup_key)
         if dup:
-            return "duplicate", f"non-Amazon post — {when}"
+            return "duplicate", tr(lang, f"non-Amazon post — {when} ago", f"non-Amazon post — {when} pehle")
 
     body_html = entities_to_html(text, entities) if text else ""
 
     try:
         if file_id:
             img_bytes = await _get_photo_bytes(context.bot, file_id)
-            if img_bytes and wm_on:
-                img_bytes = await asyncio.to_thread(
-                    apply_watermark, img_bytes, wm.get("text"), wm.get("position", "bottom_right"),
-                    (cfg.get("card") or {}).get("font", "poppins"))
+            if img_bytes and _wm_on(cfg):
+                img_bytes = await asyncio.to_thread(apply_watermark, img_bytes, wm, font)
             caption = wrap_plain_post(body_html, cfg, has_image=True) if text else None
             base = dict(chat_id=channel, caption=caption,
                         parse_mode=ParseMode.HTML if caption else None,
@@ -663,143 +643,19 @@ async def post_other(context, uid: int, payload: dict, cfg: dict):
 
         else:
             if not body_html.strip():
-                return "error", "khali post"
+                return "error", tr(lang, "empty post", "khali post")
             await deliver(context.bot.send_message,
                           dict(chat_id=channel, text=wrap_plain_post(body_html, cfg, has_image=False),
                                parse_mode=ParseMode.HTML, disable_web_page_preview=True,
                                reply_markup=build_final_markup(cfg), disable_notification=silent))
 
         if dup_key:
-            mark_posted(uid, dup_key)
-        log_post(uid, "other", "", (text or "")[:80])
+            mark_posted(uid, tid, dup_key)
+        log_post(uid, tid, "other", "", (text or "")[:80])
         return "posted", "non-Amazon post"
     except Exception as e:
-        logger.error(f"post_other fail ({uid}): {e}")
-        return "error", _friendly_error(e)
-
-
-# =============================================================================
-# QUEUE FLUSH — hourly job aur manual
-# =============================================================================
-def _interleave(amz_sorted: list, others: list) -> list:
-    if not others:
-        return amz_sorted
-    if not amz_sorted:
-        return others
-    out  = []
-    step = max(1, len(amz_sorted) // (len(others) + 1))
-    oi   = 0
-    for i, item in enumerate(amz_sorted):
-        out.append(item)
-        if oi < len(others) and (i + 1) % step == 0:
-            out.append(others[oi])
-            oi += 1
-    out.extend(others[oi:])
-    return out
-
-
-async def flush_queue(app, uid: int, reason: str = "hourly"):
-    """Ek user ki queue khali karo — fresh price laakar, sort karke, ek-ek post."""
-    lock = _flush_lock(uid)
-    if lock.locked():
-        logger.info(f"Flush ({uid}, {reason}) skip — pichhli batch chal rahi hai")
-        return
-
-    async with lock:
-        cfg = load_config(uid)
-        channel = str(cfg.get("channel", "")).strip()
-        if not channel:
-            return
-        if not is_active(uid):
-            purged = queue_purge_old(uid, 0)
-            if purged:
-                await dm_user(app.bot, uid,
-                              f"⏸️ Plan khatam hai, isliye queue ki {purged} post hata di.\n"
-                              f"/plan se plan le lo.")
-            return
-
-        purged = queue_purge_old(uid, QUEUE_MAX_AGE_HOURS)
-        items  = queue_fetch_all(uid)
-        if not items:
-            return
-
-        class _Ctx:
-            bot = app.bot
-        context = _Ctx()
-
-        amz_items = [i for i in items if i["kind"] == "amazon" and i.get("asin")]
-        oth_items = [i for i in items if i["kind"] == "other"]
-
-        dead, fresh = 0, {}
-        if amz_items:
-            fresh = await get_products_by_asins([i["asin"] for i in amz_items])
-
-        ready = []
-        for it in amz_items:
-            p = fresh.get(it["asin"])
-            if not p or not p.get("title") or p.get("deal_ends") == "khatam":
-                queue_delete(it["id"])
-                dead += 1
-                continue
-            it["product"] = p
-            ready.append(it)
-        ready.sort(key=lambda x: int(x["product"].get("discount_pct") or 0), reverse=True)
-        ordered = _interleave(ready, oth_items)
-
-        posted = dupes = errors = limited = 0
-        titles, last_err = [], ""
-
-        for idx, it in enumerate(ordered):
-            left = posts_left_today(uid)
-            if left is not None and left <= 0:
-                limited = len(ordered) - idx
-                for rest in ordered[idx:]:
-                    queue_delete(rest["id"])
-                break
-            try:
-                if it["kind"] == "amazon":
-                    status, detail, _ = await post_amazon_product(context, uid, it["product"], cfg)
-                else:
-                    status, detail = await post_other(context, uid, it["payload"], cfg)
-            except Exception as e:
-                logger.error(f"Flush item fail: {e}")
-                status, detail = "error", str(e)[:80]
-
-            if status == "posted":
-                posted += 1
-                queue_delete(it["id"])
-                if it["kind"] == "amazon" and len(titles) < 8:
-                    titles.append(detail)
-            elif status == "duplicate":
-                dupes += 1
-                queue_delete(it["id"])
-            else:
-                errors += 1
-                last_err = detail
-                if queue_bump_tries(it["id"]) >= MAX_POST_TRIES:
-                    queue_delete(it["id"])
-
-            if idx < len(ordered) - 1:
-                await asyncio.sleep(POST_GAP_SECONDS)
-
-        lines = [f"📤 <b>Batch bhej di</b> — {hhmm(now_local())}\n",
-                 f"✅ Post  : <b>{posted}</b>"]
-        for t in titles:
-            lines.append(f"   • {html_lib.escape(t[:50])}")
-        if dupes:
-            lines.append(f"🔁 Pehle post ho chuki (skip) : {dupes}")
-        if dead:
-            lines.append(f"💀 Deal khatam / data nahi : {dead}")
-        if errors:
-            lines.append(f"❌ Fail : {errors}")
-            if last_err:
-                lines.append(f"   <i>{html_lib.escape(last_err)}</i>")
-        if limited:
-            lines.append(f"🚫 Aaj ki limit poori — {limited} post chhod di")
-        if purged:
-            lines.append(f"🗑️ {QUEUE_MAX_AGE_HOURS} ghante se purani hata di : {purged}")
-        await dm_user(app.bot, uid, "\n".join(lines), parse_mode=ParseMode.HTML,
-                      disable_web_page_preview=True)
+        logger.error(f"post_other fail ({uid}/{tid}): {e}")
+        return "error", _friendly_error(e, lang)
 
 
 # =============================================================================
@@ -833,31 +689,53 @@ async def classify_amazon_urls(urls: list) -> dict:
 # =============================================================================
 def _msg_payload(msg, text: str, entities) -> dict:
     p = {"text": text, "entities": ents_to_json(entities)}
+    media = None
     if msg.photo:
         p["photo_file_id"] = msg.photo[-1].file_id
+        media = msg.photo[-1]
     elif msg.document:
         p["media_file_id"], p["media_kind"] = msg.document.file_id, "document"
+        media = msg.document
     elif msg.video:
         p["media_file_id"], p["media_kind"] = msg.video.file_id, "video"
+        media = msg.video
     elif msg.animation:
         p["media_file_id"], p["media_kind"] = msg.animation.file_id, "animation"
+        media = msg.animation
     elif msg.video_note:
         p["media_file_id"], p["media_kind"] = msg.video_note.file_id, "video_note"
+        media = msg.video_note
+    if media is not None:
+        p["unique_id"] = getattr(media, "file_unique_id", "") or ""
     return p
 
 
-def setup_problems(cfg: dict) -> list:
-    """Post karne se pehle kya-kya set hona baaki hai."""
+def setup_problems(cfg: dict, lang: str = "hi") -> list:
+    """Post karne se pehle task mein kya-kya set hona baaki hai."""
     probs = []
     if not (cfg.get("tag") or "").strip():
-        probs.append("🏷️ Affiliate tag set nahi hai — /tag")
+        probs.append(tr(lang, "🏷️ Affiliate tag is not set", "🏷️ Affiliate tag set nahi hai"))
     if not str(cfg.get("channel") or "").strip():
-        probs.append("📢 Post channel set nahi hai — /channel")
+        probs.append(tr(lang, "📢 Destination channel is not set", "📢 Destination channel set nahi hai"))
     return probs
 
 
-async def process_and_post(context, uid: int, msg, notify, cfg=None,
-                           source_tag: str = "", allow_park: bool = False):
+def posts_left_today(uid: int):
+    """Aaj kitni post aur kar sakte hain. None = koi limit nahi (admin)."""
+    lim = limits(uid)
+    if lim.get("key") == "admin":
+        return None
+    if not lim.get("key"):
+        return 0
+    return max(0, lim["daily"] - posts_today(uid))
+
+
+async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str = "hi",
+                           source_tag: str = ""):
+    """Ek message (DM ya Draft channel se) ko task ke hisaab se post karo."""
+    cfg  = task["cfg"]
+    tname = task_name(task, lang)
+
     if msg.caption is not None:
         raw_plain, raw_entities = msg.caption or "", list(msg.caption_entities or [])
         has_photo = True
@@ -873,76 +751,79 @@ async def process_and_post(context, uid: int, msg, notify, cfg=None,
 
     if not raw_plain.strip() and not all_urls and not has_photo and not (
             msg.document or msg.video or msg.animation or msg.video_note):
-        await notify("⚠️ Message mein koi text ya link nahi mila.")
+        await notify(tr(lang, "⚠️ No text or link found in this message.",
+                        "⚠️ Is message mein koi text ya link nahi mila."))
         return
 
-    if cfg is None:
-        cfg = load_config(uid)
-    probs = setup_problems(cfg)
+    probs = setup_problems(cfg, lang)
     if probs:
-        await notify("⚠️ <b>Pehle setup poora karo:</b>\n\n" + "\n".join(probs),
+        await notify(tr(lang, f"⚠️ <b>{esc(tname)} — setup is incomplete:</b>\n\n",
+                        f"⚠️ <b>{esc(tname)} — setup adhoora hai:</b>\n\n")
+                     + "\n".join(probs)
+                     + tr(lang, "\n\nOpen /tasks to finish it.", "\n\n/tasks se poora karein."),
+                     parse_mode=ParseMode.HTML)
+        return
+
+    # Amazon / Non-Amazon filter
+    if amazon_urls and not cfg.get("allow_amazon", True):
+        await notify(tr(lang, f"⏭️ Skipped — <b>{esc(tname)}</b> posts only Non-Amazon deals.",
+                        f"⏭️ Skip — <b>{esc(tname)}</b> mein sirf Non-Amazon posts jaati hain."),
+                     parse_mode=ParseMode.HTML)
+        return
+    if not amazon_urls and not cfg.get("allow_other", True):
+        await notify(tr(lang, f"⏭️ Skipped — <b>{esc(tname)}</b> posts only Amazon deals.",
+                        f"⏭️ Skip — <b>{esc(tname)}</b> mein sirf Amazon posts jaati hain."),
                      parse_mode=ParseMode.HTML)
         return
 
     channel = str(cfg.get("channel", "")).strip()
     tag     = cfg.get("tag", "")
-    shown_channel = cfg.get("channel_title") or channel
+    shown   = chan(cfg.get("channel_title"), cfg.get("channel_username"), channel)
+    footer  = f"\n📋 {esc(tname)} → 📢 {shown}" + source_tag
 
     left = posts_left_today(uid)
     if left is not None and left <= 0:
-        await notify(f"🚫 <b>Aaj ki limit poori</b> ({DAILY_POST_LIMIT} post/din).\n"
-                     f"Kal phir se post kar paoge.", parse_mode=ParseMode.HTML)
+        lim = limits(uid)
+        await notify(tr(lang,
+                        f"🚫 <b>Today's limit reached</b> ({lim.get('daily', 0)} posts/day).\n"
+                        "It resets at 12:00 midnight. Need more? /plan",
+                        f"🚫 <b>Aaj ki limit poori</b> ({lim.get('daily', 0)} post/din).\n"
+                        "Raat 12 baje reset hogi. Zyada chahiye? /plan"),
+                     parse_mode=ParseMode.HTML)
         return
-
-    parking = allow_park and cfg.get("park_post", False)
 
     # ==========================================================================
     # AMAZON
     # ==========================================================================
     if amazon_urls:
-        wait_msg = await notify("⏳ Amazon links check ho rahe hain...")
+        wait_msg = await notify(tr(lang, "⏳ Checking Amazon links...", "⏳ Amazon links check ho rahe hain..."))
         buckets  = await classify_amazon_urls(amazon_urls)
         products = buckets["products"]
         searches = buckets["searches"]
         unknown  = buckets["unknown"]
 
-        # Setting ON hai to search/deals page bhi normal post ki tarah jaayega
         if cfg.get("search_links") and searches:
             unknown, searches = unknown + searches, []
 
         if not products and not unknown:
             await _edit_or_notify(
                 wait_msg, notify,
-                f"🚫 <b>Skip!</b> Sirf Amazon search/deals page mile ({len(searches)}) — "
-                f"kuch post nahi kiya.\n<i>Ye bhi post karne hain to /settings mein "
-                f"'Search Links' ON karo.</i>", parse_mode=ParseMode.HTML)
+                tr(lang,
+                   f"🚫 <b>Skipped!</b> Only Amazon search/deals pages found ({len(searches)}).\n"
+                   "<i>To post these too, turn ON 'Search Links' in the task settings.</i>",
+                   f"🚫 <b>Skip!</b> Sirf Amazon search/deals page mile ({len(searches)}).\n"
+                   "<i>Ye bhi post karne hain to task settings mein 'Search Links' ON karein.</i>"),
+                parse_mode=ParseMode.HTML)
             return
 
         if products:
             cap = MAX_PER_MESSAGE if left is None else min(MAX_PER_MESSAGE, left)
             if len(products) > cap:
-                await notify(f"⚠️ {len(products)} products mile — pehle {cap} liye.")
+                await notify(tr(lang, f"⚠️ {len(products)} products found — taking the first {cap}.",
+                                f"⚠️ {len(products)} products mile — pehle {cap} liye."))
                 products = products[:cap]
 
-            # ── PARK MODE ─────────────────────────────────────────────────
-            if parking:
-                added = sum(1 for p in products if queue_add_amazon(uid, p["asin"]))
-                skip  = len(products) - added
-                amz_n, oth_n = queue_counts(uid)
-                lines = [f"🅿️ <b>{added} deal queue mein daal di.</b>"]
-                if skip:
-                    lines.append(f"🔁 {skip} pehle se queue mein thi.")
-                if searches:
-                    lines.append(f"🚫 {len(searches)} search page chhod diye.")
-                lines.append(f"\n📋 Queue: {amz_n} Amazon + {oth_n} other")
-                lines.append(f"🕐 Agli batch: <b>{next_batch_label()}</b>")
-                await _edit_or_notify(wait_msg, notify, "\n".join(lines),
-                                      parse_mode=ParseMode.HTML)
-                return
-
-            # ── INSTANT ───────────────────────────────────────────────────
             fetched = await get_products_by_asins([p["asin"] for p in products])
-
             posted, dupes, errors = [], [], []
             note, all_skipped = "", set()
 
@@ -951,7 +832,7 @@ async def process_and_post(context, uid: int, msg, notify, cfg=None,
             nodata = [p["asin"] for p in products if p["asin"] not in fetched]
 
             for i, prod in enumerate(live):
-                status, detail, n = await post_amazon_product(context, uid, prod, cfg)
+                status, detail, n = await post_amazon_product(context, uid, task, prod, lang)
                 if status == "posted":
                     posted.append(detail)
                     note = note or n
@@ -967,15 +848,16 @@ async def process_and_post(context, uid: int, msg, notify, cfg=None,
 
             # Single product + data nahi mila → original text user ke tag ke saath
             if len(products) == 1 and not posted and nodata:
-                asin  = products[0]["asin"]
-                dup, when = is_duplicate(uid, asin)
-                if dup:
-                    await _edit_or_notify(wait_msg, notify,
-                                          f"⚠️ <b>Pehle post ho chuka hai!</b> ({when}) — skip kiya.",
-                                          parse_mode=ParseMode.HTML)
-                    return
+                asin = products[0]["asin"]
+                if cfg.get("dup_check", True):
+                    dup, when = is_duplicate(uid, task["id"], "a:" + asin)
+                    if dup:
+                        await _edit_or_notify(wait_msg, notify,
+                                              tr(lang, f"⚠️ <b>Already posted</b> ({when} ago) — skipped.",
+                                                 f"⚠️ <b>Pehle post ho chuka hai</b> ({when} pehle) — skip kiya."),
+                                              parse_mode=ParseMode.HTML)
+                        return
                 cp, ce = remove_footer(raw_plain, raw_entities)
-                # Saare Amazon links (dikhne wale + chhupe hue) pe user ka tag
                 cp, ce = await replace_amazon_links(cp, ce, amazon_urls, tag)
                 body   = entities_to_html(cp, ce)
                 try:
@@ -984,73 +866,61 @@ async def process_and_post(context, uid: int, msg, notify, cfg=None,
                                        parse_mode=ParseMode.HTML, disable_web_page_preview=True,
                                        reply_markup=build_final_markup(cfg, asin=asin),
                                        disable_notification=cfg.get("silent", True)))
-                    mark_posted(uid, asin)
-                    log_post(uid, "amazon", asin, cp[:80])
+                    if cfg.get("dup_check", True):
+                        mark_posted(uid, task["id"], "a:" + asin)
+                    log_post(uid, task["id"], "amazon", asin, cp[:80])
                     await _edit_or_notify(
                         wait_msg, notify,
-                        "✅ <b>Post ho gaya!</b>\n"
-                        "⚠️ Amazon se product details nahi mili — original text tumhare "
-                        f"affiliate link ke saath bheja.\n📢 <b>{html_lib.escape(shown_channel)}</b>"
-                        + source_tag, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+                        tr(lang,
+                           "✅ <b>Posted!</b>\n⚠️ Amazon didn't return product details — sent your "
+                           "original text with your affiliate link.",
+                           "✅ <b>Post ho gaya!</b>\n⚠️ Amazon se product details nahi mili — aapka "
+                           "original text aapke affiliate link ke saath bheja.") + footer,
+                        parse_mode=ParseMode.HTML, disable_web_page_preview=True)
                 except Exception as e:
                     await _edit_or_notify(wait_msg, notify,
-                                          f"❌ <b>Post nahi hua!</b>\n{html_lib.escape(_friendly_error(e))}",
-                                          parse_mode=ParseMode.HTML)
+                                          tr(lang, "❌ <b>Post failed!</b>\n", "❌ <b>Post nahi hua!</b>\n")
+                                          + esc(_friendly_error(e, lang)), parse_mode=ParseMode.HTML)
                 return
 
-            bell = "🔕 Silent" if cfg.get("silent", True) else "🔔 Loud"
             lines = []
             if len(posted) == 1 and not dupes and not nodata and not errors:
-                lines.append("✅ <b>Amazon Deal Post Ho Gaya!</b>")
-                lines.append(f"🖼️ Image: {note}" if note else "🖼️ Image nahi — text post kiya.")
+                lines.append(tr(lang, "✅ <b>Amazon deal posted!</b>", "✅ <b>Amazon deal post ho gayi!</b>"))
+                lines.append(f"🖼️ {note}" if note else tr(lang, "📝 Text post (no image)", "📝 Text post (photo nahi)"))
             else:
-                lines.append(f"✅ <b>{len(posted)} deal post ho gayi!</b>"
-                             if posted else "⚠️ <b>Koi deal post nahi hui.</b>")
+                lines.append(tr(lang, f"✅ <b>{len(posted)} deals posted!</b>",
+                                f"✅ <b>{len(posted)} deal post ho gayi!</b>")
+                             if posted else tr(lang, "⚠️ <b>No deal was posted.</b>",
+                                               "⚠️ <b>Koi deal post nahi hui.</b>"))
                 for t in posted[:8]:
-                    lines.append(f"   • {html_lib.escape(t[:50])}")
+                    lines.append(f"   • {esc(t[:50])}")
                 if note:
-                    lines.append(f"🖼️ Image: {note}")
+                    lines.append(f"🖼️ {note}")
             if dupes:
-                lines.append(f"\n🔁 {len(dupes)} pehle hi post ho chuki thi (24 ghante mein)")
+                lines.append(tr(lang, f"\n♻️ {len(dupes)} already posted in last 24h (skipped)",
+                                f"\n♻️ {len(dupes)} pichle 24 ghante mein post ho chuki (skip)"))
             if nodata:
-                lines.append(f"⚠️ {len(nodata)} ka data Amazon se nahi mila")
+                lines.append(tr(lang, f"⚠️ Amazon returned no data for {len(nodata)}",
+                                f"⚠️ {len(nodata)} ka data Amazon se nahi mila"))
             if errors:
-                lines.append(f"❌ {len(errors)} fail — {html_lib.escape(errors[0])}")
+                lines.append(f"❌ {len(errors)} — {esc(errors[0])}")
             if searches:
-                lines.append(f"🚫 {len(searches)} search page chhod diye")
+                lines.append(tr(lang, f"🚫 {len(searches)} search pages skipped",
+                                f"🚫 {len(searches)} search page chhod diye"))
             if all_skipped:
                 names = ", ".join(FIELD_LABELS.get(k, k) for k in all_skipped)
-                lines.append(f"\n✂️ Post mein jagah kam thi, ye cheezein chhoot gayi: "
-                             f"<b>{html_lib.escape(names)}</b>\n"
-                             f"<i>/amz_post se kuch band kar do.</i>")
-            lines.append(f"\n🔔 {bell}")
-            lines.append(f"📢 <b>{html_lib.escape(shown_channel)}</b>")
-            if source_tag:
-                lines.append(source_tag.strip())
-            await _edit_or_notify(wait_msg, notify, "\n".join(lines), parse_mode=ParseMode.HTML,
-                                  disable_web_page_preview=True)
+                lines.append(tr(lang, f"\n✂️ Not enough space, left out: <b>{esc(names)}</b>",
+                                f"\n✂️ Jagah kam thi, ye chhoot gaye: <b>{esc(names)}</b>"))
+            await _edit_or_notify(wait_msg, notify, "\n".join(lines) + footer,
+                                  parse_mode=ParseMode.HTML, disable_web_page_preview=True)
             return
 
         # ── Sirf unknown / search Amazon links ────────────────────────────
         cp, ce = remove_footer(raw_plain, raw_entities)
         cp, ce = await replace_amazon_links(cp, ce, amazon_urls, tag)
         payload = _msg_payload(msg, cp, ce)
-        if parking:
-            queue_add_other(uid, payload)
-            await _edit_or_notify(wait_msg, notify, "🅿️ Queue mein daal diya.", parse_mode=ParseMode.HTML)
-            return
-        status, detail = await post_other(context, uid, payload, cfg)
-        if status == "posted":
-            note = f"\n🚫 {len(searches)} search page chhod diye." if searches else ""
-            await _edit_or_notify(wait_msg, notify, "✅ <b>Post ho gaya!</b>\n<i>Link pe tumhara affiliate tag laga diya.</i>"
-                         + note + f"\n📢 <b>{html_lib.escape(shown_channel)}</b>" + source_tag,
-                         parse_mode=ParseMode.HTML, disable_web_page_preview=True)
-        elif status == "duplicate":
-            await _edit_or_notify(wait_msg, notify, f"⚠️ <b>Pehle post ho chuka hai!</b> {html_lib.escape(detail)} — skip kiya.",
-                         parse_mode=ParseMode.HTML)
-        else:
-            await _edit_or_notify(wait_msg, notify, f"❌ <b>Post nahi hua!</b>\n{html_lib.escape(detail)}",
-                         parse_mode=ParseMode.HTML)
+        status, detail = await post_other(context, uid, task, payload, lang)
+        await _report_other(wait_msg, notify, status, detail, lang, footer, tagged=True)
         return
 
     # ==========================================================================
@@ -1058,25 +928,26 @@ async def process_and_post(context, uid: int, msg, notify, cfg=None,
     # ==========================================================================
     cp, ce  = remove_footer(raw_plain, raw_entities)
     payload = _msg_payload(msg, cp, ce)
+    status, detail = await post_other(context, uid, task, payload, lang)
+    await _report_other(None, notify, status, detail, lang, footer)
 
-    if parking:
-        queue_add_other(uid, payload)
-        amz_n, oth_n = queue_counts(uid)
-        await notify(f"🅿️ <b>Queue mein daal diya.</b>\n\n"
-                     f"📋 Queue: {amz_n} Amazon + {oth_n} other\n"
-                     f"🕐 Agli batch: <b>{next_batch_label()}</b>",
-                     parse_mode=ParseMode.HTML)
-        return
 
-    status, detail = await post_other(context, uid, payload, cfg)
-    bell = "🔕 Silent" if cfg.get("silent", True) else "🔔 Loud"
+async def _report_other(wait_msg, notify, status, detail, lang, footer, tagged=False):
     if status == "posted":
-        await notify(f"✅ <b>Post ho gaya!</b>\n🔔 {bell}\n"
-                     f"📢 <b>{html_lib.escape(shown_channel)}</b>" + source_tag,
-                     parse_mode=ParseMode.HTML)
+        text = tr(lang, "✅ <b>Posted!</b>", "✅ <b>Post ho gaya!</b>")
+        if tagged:
+            text += tr(lang, "\n<i>Your affiliate tag was added to the link.</i>",
+                       "\n<i>Link pe aapka affiliate tag laga diya.</i>")
+        text += footer
     elif status == "duplicate":
-        await notify(f"⚠️ <b>Pehle post ho chuka hai!</b> {html_lib.escape(detail)} — skip kiya.",
-                     parse_mode=ParseMode.HTML)
+        text = tr(lang, f"♻️ <b>Already posted</b> ({esc(detail)}) — skipped.",
+                  f"♻️ <b>Pehle post ho chuka hai</b> ({esc(detail)}) — skip kiya.")
     else:
-        await notify(f"❌ <b>Post nahi hua!</b>\n{html_lib.escape(detail)}",
-                     parse_mode=ParseMode.HTML)
+        text = tr(lang, "❌ <b>Post failed!</b>\n", "❌ <b>Post nahi hua!</b>\n") + esc(detail)
+    await _edit_or_notify(wait_msg, notify, text, parse_mode=ParseMode.HTML,
+                          disable_web_page_preview=True)
+
+
+def task_name(task: dict, lang: str = "hi") -> str:
+    name = (task.get("cfg", {}).get("name") or "").strip()
+    return name or f"Task #{task.get('id')}"
