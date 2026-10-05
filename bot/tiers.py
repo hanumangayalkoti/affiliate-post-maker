@@ -74,6 +74,8 @@ def new_expiry(now: datetime, cur_exp, cur_tier: str, is_trial: bool, buy_tier: 
       • Trial / khatam   → aaj se naye din
     """
     running = bool(cur_exp and cur_exp > now)
+    if running and not is_trial and cur_tier not in TIERS:
+        cur_tier = "pro"             # purane plan (tier khaali) ko Pro maano — din nahi katenge
     if running and not is_trial and cur_tier == buy_tier:
         base = cur_exp
     elif running and not is_trial and cur_tier in TIERS:

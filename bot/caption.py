@@ -36,8 +36,13 @@ FIELD_LABELS = {
 }
 
 
+def _u16(text: str) -> int:
+    """Telegram length UTF-16 mein ginta hai — emoji = 2."""
+    return sum(2 if ord(ch) > 0xFFFF else 1 for ch in text)
+
+
 def _visible_len(html_text: str) -> int:
-    return len(_TAG_RE.sub("", html_text))
+    return _u16(html_lib.unescape(_TAG_RE.sub("", html_text)))
 
 
 _PARTIAL_ENTITY_RE = re.compile(r"&[A-Za-z0-9#]*$")
@@ -187,9 +192,9 @@ def build_amazon_caption(product: dict, short_link: str, cfg: dict,
     # Header / footer / link ki jagah pehle se reserve
     reserved = 0
     if head_line:
-        reserved += len(head_line) + 2
+        reserved += _u16(head_line) + 2
     if foot_line:
-        reserved += len(foot_line) + 2
+        reserved += _u16(foot_line) + 2
     if link_line:
         reserved += _visible_len(link_line) + 2
 
@@ -264,9 +269,9 @@ def wrap_plain_post(body_html: str, cfg: dict, has_image: bool = False) -> str:
     limit    = (PHOTO_CAPTION_LIMIT if has_image else TEXT_LIMIT) - 8
     reserved = 0
     if head_line:
-        reserved += len(head_line) + 2
+        reserved += _u16(head_line) + 2
     if foot_line:
-        reserved += len(foot_line) + 2
+        reserved += _u16(foot_line) + 2
 
     body = _safe_truncate(body_html, max(40, limit - reserved))
 

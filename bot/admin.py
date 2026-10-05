@@ -152,7 +152,8 @@ def user_card(uid: int, seg: str = "all", page: int = 0):
     ]
     if u.get("bot_blocked"):
         lines.append("🚫 Bot ko block kiya hua hai")
-    lines.append(f"\n📤 Posts: aaj {st['today']} / {lim['daily'] or '∞'} | 7 din {st['week']} | total {st['total']}")
+    daily = "∞" if lim.get("key") == "admin" else lim["daily"]
+    lines.append(f"\n📤 Posts: aaj {st['today']} / {daily} | 7 din {st['week']} | total {st['total']}")
     lines.append(f"\n📋 <b>Tasks ({len(tasks)})</b>")
     for t in tasks[:6]:
         c = t["cfg"]

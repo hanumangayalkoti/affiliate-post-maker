@@ -4,6 +4,7 @@ post stats aur daily message ginti.
 """
 import re
 import json
+import hashlib
 import logging
 from datetime import datetime, timedelta
 
@@ -16,20 +17,24 @@ CLEANUP_AFTER_HOURS    = 72
 
 _PUNCT_RE = re.compile(r"[^\w\s]", re.UNICODE)
 _WS_RE    = re.compile(r"\s+")
-_URL_RE   = re.compile(r"https?://\S+")
 
 
 # =============================================================================
 # DUPLICATE DETECTION (har task ka alag)
 # =============================================================================
 def normalise_caption(text: str) -> str:
-    """Caption se duplicate key — link, emoji, punctuation, case sab hata ke."""
+    """
+    Duplicate key — emoji, punctuation, case, extra space hata ke. Link RAKHTE hain:
+    'Loot deal 🔥 <link>' jaisi do alag deals ka text same hota hai, sirf link alag.
+    Lamba text pura gina jaata hai (hash), taaki aakhir ka link bhi count ho.
+    """
     if not text:
         return ""
-    low = _URL_RE.sub(" ", text.lower())
-    low = _PUNCT_RE.sub(" ", low)
+    low = _PUNCT_RE.sub(" ", text.lower())
     low = _WS_RE.sub(" ", low).strip()
-    return low[:300]
+    if len(low) <= 200:
+        return low
+    return low[:120] + "#" + hashlib.sha1(low.encode("utf-8")).hexdigest()[:20]
 
 
 def _key(task_id: int, key: str) -> str:

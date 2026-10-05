@@ -231,10 +231,11 @@ async def after_gate(bot, uid: int):
                              f"📤 {pro['daily']} post/din • 🎨 Image Card"),
                           parse_mode=ParseMode.HTML)
             await notify_admins(bot, f"🎁 <b>Trial shuru</b>: {who(uid)}", uid)
-    if not list_tasks(uid):
-        tid = create_task(uid, new_task_config("Task 1"))
-        if tid:
-            set_default_task(uid, tid)
+            # Pehli baar hi Task 1 banta hai — user ne baad mein delete kiya to wapas nahi
+            if not list_tasks(uid):
+                tid = create_task(uid, new_task_config("Task 1"))
+                if tid:
+                    set_default_task(uid, tid)
 
 
 # =============================================================================
@@ -617,6 +618,11 @@ async def midnight_job(context: ContextTypes.DEFAULT_TYPE):
                             "\n".join("• " + who(u) for u in expired[:30]))
 
 
+async def on_error(update, context: ContextTypes.DEFAULT_TYPE):
+    """Koi bhi anjaan gadbad — Railway logs mein poori detail."""
+    logger.error("Handler error", exc_info=context.error)
+
+
 async def cleanup_job(context: ContextTypes.DEFAULT_TYPE):
     n = cache_cleanup(CACHE_KEEP_DAYS)
     post_log_cleanup(120)
@@ -642,7 +648,8 @@ def main():
         raise ValueError("ADMIN_ID environment variable set nahi hai ya galat hai!")
 
     init_db()
-    upsert_user(OWNER_ID, "", "Admin")
+    if not get_user(OWNER_ID):          # sirf pehli baar — warna har restart pe naam mit jaata
+        upsert_user(OWNER_ID, "", "Admin")
 
     async def post_init(app):
         try:
@@ -698,6 +705,7 @@ def main():
         filters.UpdateType.MESSAGE & dm & ~filters.COMMAND & ~filters.SUCCESSFUL_PAYMENT,
         handle_private))
     app.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POST, handle_channel_post))
+    app.add_error_handler(on_error)
 
     jq = app.job_queue
     if jq:
