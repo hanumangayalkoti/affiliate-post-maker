@@ -30,6 +30,8 @@ from database import (
 from storage import load_config
 from users import is_admin, is_active
 from watermark import apply_watermark
+from card import render_card
+from ui import btn
 
 logger = logging.getLogger(__name__)
 
@@ -426,12 +428,12 @@ def build_final_markup(config: dict, asin: str = ""):
     if asin:
         buy = btns.get("buy", {})
         if buy.get("enabled"):
-            amz_row.append(InlineKeyboardButton(buy.get("label") or "⚡ Buy Now",
-                                                url=make_affiliate_url(asin, tag)))
+            amz_row.append(btn(buy.get("label") or "⚡ Buy Now", buy.get("style", ""),
+                               url=make_affiliate_url(asin, tag)))
         cart = btns.get("cart", {})
         if cart.get("enabled"):
-            amz_row.append(InlineKeyboardButton(cart.get("label") or "🛒 Add to Cart",
-                                                url=make_cart_url(asin, tag)))
+            amz_row.append(btn(cart.get("label") or "🛒 Add to Cart", cart.get("style", ""),
+                               url=make_cart_url(asin, tag)))
     if amz_row:
         rows.append(amz_row)
 
@@ -439,10 +441,30 @@ def build_final_markup(config: dict, asin: str = ""):
     for key in ("btn1", "btn2"):
         b = btns.get(key, {})
         if b.get("enabled") and b.get("label") and b.get("url"):
-            row.append(InlineKeyboardButton(b["label"], url=b["url"]))
+            row.append(btn(b["label"], b.get("style", ""), url=b["url"]))
     if row:
         rows.append(row)
     return InlineKeyboardMarkup(rows) if rows else None
+
+
+async def make_post_image(raw: bytes, product: dict, cfg: dict):
+    """
+    Amazon photo → post wali photo. Card ON hai to card (watermark andar hi),
+    warna seedhi photo + watermark. Returns (bytes, card_bana_ya_nahi).
+    Pillow ka kaam alag thread mein — bot baaki users ke liye ruke nahi.
+    """
+    card_cfg = cfg.get("card") or {}
+    wm = cfg.get("watermark", {})
+    if card_cfg.get("enabled"):
+        out = await asyncio.to_thread(render_card, raw, product, card_cfg, wm)
+        if out:
+            return out, True
+    if wm.get("enabled") and (wm.get("text") or "").strip():
+        out = await asyncio.to_thread(apply_watermark, raw, wm.get("text"),
+                                      wm.get("position", "bottom_right"),
+                                      card_cfg.get("font", "poppins"))
+        return out, False
+    return raw, False
 
 
 # =============================================================================
@@ -458,7 +480,10 @@ async def _send_with_retry(coro_factory, tries: int = 3):
             logger.warning(f"429 — {wait:.0f}s ruk raha hoon (try {attempt+1})")
             await asyncio.sleep(wait)
             last_err = e
-        except (TimedOut, NetworkError) as e:
+        except TimedOut:
+            # Timeout ka matlab post shayad pahunch chuki hai — dobara bheji to double post
+            raise
+        except NetworkError as e:
             if isinstance(e, BadRequest):
                 raise
             await asyncio.sleep(2 + attempt * 2)
@@ -543,22 +568,24 @@ async def post_amazon_product(context, uid: int, product: dict, cfg: dict, force
         if dup:
             return "duplicate", f"{title[:55] or asin} — {when}", ""
 
-    want_image = detailed and fields.get("image", True)
+    card_cfg = cfg.get("card") or {}
+    card_on  = bool(card_cfg.get("enabled"))
+    want_image = card_on or (detailed and fields.get("image", True))
     short_link = make_affiliate_url(asin, tag)
     wm_on = wm.get("enabled") and (wm.get("text") or "").strip()
 
-    img_bytes = None
+    img_bytes, used_card = None, False
     if want_image and product.get("image_url"):
-        img_bytes = await _download_image(product["image_url"])
-        if img_bytes and wm_on:
-            img_bytes = apply_watermark(img_bytes, wm.get("text"))
+        raw = await _download_image(product["image_url"])
+        if raw:
+            img_bytes, used_card = await make_post_image(raw, product, cfg)
 
     caption, _ = build_amazon_caption(product, short_link, cfg, has_image=bool(img_bytes))
     markup = build_final_markup(cfg, asin=asin)
 
     note = ""
     if img_bytes:
-        note = "Amazon" + (" + Watermark" if wm_on else "")
+        note = ("Image Card" if used_card else "Amazon") + (" + Watermark" if wm_on else "")
 
     try:
         if img_bytes:
@@ -604,7 +631,9 @@ async def post_other(context, uid: int, payload: dict, cfg: dict):
         if file_id:
             img_bytes = await _get_photo_bytes(context.bot, file_id)
             if img_bytes and wm_on:
-                img_bytes = apply_watermark(img_bytes, wm.get("text"))
+                img_bytes = await asyncio.to_thread(
+                    apply_watermark, img_bytes, wm.get("text"), wm.get("position", "bottom_right"),
+                    (cfg.get("card") or {}).get("font", "poppins"))
             caption = wrap_plain_post(body_html, cfg, has_image=True) if text else None
             base = dict(chat_id=channel, caption=caption,
                         parse_mode=ParseMode.HTML if caption else None,
@@ -939,6 +968,12 @@ async def process_and_post(context, uid: int, msg, notify, cfg=None,
             # Single product + data nahi mila → original text user ke tag ke saath
             if len(products) == 1 and not posted and nodata:
                 asin  = products[0]["asin"]
+                dup, when = is_duplicate(uid, asin)
+                if dup:
+                    await _edit_or_notify(wait_msg, notify,
+                                          f"⚠️ <b>Pehle post ho chuka hai!</b> ({when}) — skip kiya.",
+                                          parse_mode=ParseMode.HTML)
+                    return
                 cp, ce = remove_footer(raw_plain, raw_entities)
                 # Saare Amazon links (dikhne wale + chhupe hue) pe user ka tag
                 cp, ce = await replace_amazon_links(cp, ce, amazon_urls, tag)
@@ -949,6 +984,7 @@ async def process_and_post(context, uid: int, msg, notify, cfg=None,
                                        parse_mode=ParseMode.HTML, disable_web_page_preview=True,
                                        reply_markup=build_final_markup(cfg, asin=asin),
                                        disable_notification=cfg.get("silent", True)))
+                    mark_posted(uid, asin)
                     log_post(uid, "amazon", asin, cp[:80])
                     await _edit_or_notify(
                         wait_msg, notify,

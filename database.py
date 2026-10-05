@@ -369,6 +369,22 @@ def user_stats(user_id: int, day_start: datetime) -> dict:
     return out
 
 
+def last_amazon_asins(user_id: int, limit: int = 5) -> list:
+    """User ki latest Amazon posts ke ASIN — card preview ke liye."""
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT asin FROM post_log WHERE user_id = %s AND kind = 'amazon' "
+                    "AND asin IS NOT NULL ORDER BY posted_at DESC LIMIT %s",
+                    (user_id, limit),
+                )
+                return [r[0] for r in cur.fetchall()]
+    except Exception as e:
+        logger.error(f"last_amazon_asins error: {e}")
+        return []
+
+
 def global_post_stats(day_start: datetime) -> dict:
     out = {"today": 0, "month": 0, "active_posters_today": 0}
     try:

@@ -36,6 +36,8 @@ logger = logging.getLogger("main")
 
 import admin
 import billing
+import card_ui
+import gate
 import price_watch
 import settings_ui
 from database import (
@@ -47,6 +49,7 @@ from engine import (
     DAILY_POST_LIMIT,
 )
 from storage import init_db, load_config, find_users_by_source, find_users_by_post_channel
+from ui import btn, GREEN, BLUE
 from users import (
     ADMIN_IDS, OWNER_ID, is_admin, is_active, is_blocked, get_user, upsert_user,
     days_left, users_expiring_soon, users_just_expired, set_remind_stage,
@@ -65,12 +68,22 @@ _new_users: set = set()         # abhi-abhi pehli baar aaye users (welcome / adm
 # MENUS & TEXTS
 # =============================================================================
 def main_menu_kb(uid: int) -> InlineKeyboardMarkup:
-    rows = [
+    cfg = load_config(uid)
+    rows = []
+    # Setup adhoora hai to seedhe us kaam ke buttons sabse upar
+    if not (cfg.get("tag") or "").strip():
+        rows.append([btn("🏷️ Affiliate tag set karo", GREEN, callback_data="set_tag_edit")])
+    if not str(cfg.get("channel") or "").strip():
+        rows.append([btn("📢 Channel jodo", GREEN, callback_data="set_channel")])
+    if not is_active(uid):
+        rows.append([btn(f"💳 Plan lo — ₹{billing.PRICE_INR}", BLUE, callback_data="open_plan")])
+    rows += [
         [InlineKeyboardButton("⚙️ Settings", callback_data="set_home"),
-         InlineKeyboardButton("💳 Plan", callback_data="open_plan")],
+         InlineKeyboardButton("🎨 Image Card", callback_data="card_home")],
         [InlineKeyboardButton("📊 Stats", callback_data="menu_stats"),
          InlineKeyboardButton("📉 Price Alerts", callback_data="menu_alerts")],
-        [InlineKeyboardButton("❓ Help", callback_data="menu_help")],
+        [InlineKeyboardButton("💳 Plan", callback_data="open_plan"),
+         InlineKeyboardButton("❓ Help", callback_data="menu_help")],
     ]
     if is_admin(uid):
         rows.append([InlineKeyboardButton("👑 Admin Panel", callback_data="adm_home")])
@@ -117,10 +130,11 @@ def help_text(uid: int) -> str:
         "🏷️ /tag — Affiliate tag\n"
         "📢 /channel — Post channel\n"
         "📥 /draft — Draft channel (optional)\n"
+        "🎨 /card — Image Card (photo pe price, discount, design)\n"
         "🛍️ /amz_post — Post mein kya-kya dikhe\n"
         "🎛️ /setbutton — Post ke neeche buttons\n"
         "🔝 /header  🔚 /footer — Upar/neeche ki line\n"
-        "🖼️ /watermark — Photo pe tumhara naam\n"
+        "💧 /watermark — Photo pe tumhara naam\n"
         "🔔 /silent — Notification silent/loud\n"
         "🅿️ /park_post — Har ghante ek saath post\n"
         "📋 /queue — Queue dekho\n"
@@ -184,6 +198,9 @@ def user_command(fn, need_plan: bool = False):
             await update.message.reply_text("⛔ Tumhara access band kar diya gaya hai.\n"
                                             + billing.support_line())
             return
+        if not await gate.is_joined(context.bot, uid):
+            await gate.send_join_prompt(update.message.reply_text)
+            return
         # Koi bhi command = pichla adhoora sawaal (tag bhejo / text bhejo...) khatam
         context.user_data.pop("action", None)
         if need_plan and not is_active(uid):
@@ -239,6 +256,12 @@ async def cmd_stats(update, context, uid):
     await update.message.reply_text(stats_text(uid), parse_mode=ParseMode.HTML)
 
 
+async def cmd_card(update, context, uid):
+    cfg = load_config(uid)
+    await update.message.reply_text(card_ui.card_home_text(cfg), parse_mode=ParseMode.HTML,
+                                    reply_markup=card_ui.card_home_kb(cfg))
+
+
 async def cmd_cancel(update, context, uid):
     context.user_data.clear()
     await update.message.reply_text("❌ Band kar diya.")
@@ -264,6 +287,9 @@ async def handle_private(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = _touch(update)
     if is_blocked(uid):
         await msg.reply_text("⛔ Tumhara access band kar diya gaya hai.\n" + billing.support_line())
+        return
+    if not await gate.is_joined(context.bot, uid):
+        await gate.send_join_prompt(msg.reply_text)
         return
 
     action = (context.user_data or {}).get("action")
@@ -397,6 +423,25 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not get_user(uid):
         upsert_user(uid, query.from_user.username or "", query.from_user.first_name or "")
 
+    if data == "fj_check":
+        if await gate.is_joined(context.bot, uid, fresh=True):
+            await query.answer("✅ Shukriya! Ab shuru karte hain 🚀")
+            try:
+                await query.edit_message_text(welcome_text(uid, query.from_user.first_name),
+                                              parse_mode=ParseMode.HTML, reply_markup=main_menu_kb(uid),
+                                              disable_web_page_preview=True)
+            except Exception:
+                await query.message.reply_text(welcome_text(uid, query.from_user.first_name),
+                                               parse_mode=ParseMode.HTML, reply_markup=main_menu_kb(uid))
+        else:
+            await query.answer("❌ Abhi join nahi kiya. Pehle 'Join Channel' dabao, phir yahan aao.",
+                               show_alert=True)
+        return
+    if not await gate.is_joined(context.bot, uid):
+        await query.answer("🔒 Pehle channel join karo.", show_alert=True)
+        await gate.send_join_prompt(query.message.reply_text)
+        return
+
     if data.startswith("adm_"):
         await admin.handle_admin_callback(query, context, uid, data)
         try:
@@ -514,9 +559,10 @@ async def cleanup_job(context: ContextTypes.DEFAULT_TYPE):
 USER_COMMANDS = [
     ("start", "🏠 Main menu"), ("settings", "⚙️ Saari settings"), ("tag", "🏷️ Affiliate tag"),
     ("channel", "📢 Post channel"), ("draft", "📥 Draft channel"), ("plan", "💳 Plan / payment"),
+    ("card", "🎨 Image Card"),
     ("amz_post", "🛍️ Post mein kya dikhe"), ("setbutton", "🎛️ Post ke buttons"),
     ("header", "🔝 Upar ki line"), ("footer", "🔚 Neeche ki line"),
-    ("watermark", "🖼️ Photo pe naam"), ("silent", "🔔 Silent / loud"),
+    ("watermark", "💧 Photo pe naam"), ("silent", "🔔 Silent / loud"),
     ("park_post", "🅿️ Har ghante batch"), ("queue", "📋 Queue"),
     ("track", "📉 Price track karo"), ("alerts", "🔔 Tracked products"),
     ("stats", "📊 Meri posts"), ("status", "📊 Settings ek nazar mein"),
@@ -565,6 +611,7 @@ def main():
         .rate_limiter(AIORateLimiter(overall_max_rate=25, overall_time_period=1,
                                      group_max_rate=19, group_time_period=60, max_retries=3))
         .concurrent_updates(True)
+        .connect_timeout(20).read_timeout(30).write_timeout(60).pool_timeout(20)
         .post_init(post_init)
         .post_shutdown(post_shutdown)
         .build()
@@ -578,7 +625,7 @@ def main():
 
     user_cmds = [
         ("start", cmd_start, False), ("menu", cmd_start, False), ("help", cmd_help, False),
-        ("cancel", cmd_cancel, False), ("stats", cmd_stats, False),
+        ("cancel", cmd_cancel, False), ("stats", cmd_stats, False), ("card", cmd_card, False),
         ("settings", settings_ui.cmd_settings, False), ("status", settings_ui.cmd_status, False),
         ("tag", settings_ui.cmd_tag, False),
         ("channel", settings_ui.cmd_channel, False), ("setchannel", settings_ui.cmd_channel, False),

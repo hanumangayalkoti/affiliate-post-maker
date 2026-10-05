@@ -18,6 +18,7 @@ from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
 from engine import fmt_date, dm_user
+from ui import btn, GREEN, BLUE
 from users import (
     get_user, is_admin, is_active, days_left, ADMIN_IDS, upsert_user, payment_exists, payment_status_by_receipt,
     payment_create_pending, payment_mark_paid_razorpay, payment_record_stars,
@@ -54,7 +55,15 @@ def support_line() -> str:
 # =============================================================================
 def plan_text(uid: int) -> str:
     if is_admin(uid):
-        return "👑 <b>Tum admin ho</b> — tumhare liye plan ki zaroorat nahi, sab hamesha chalu hai."
+        missing = [n for n, v in (("RAZORPAY_KEY_ID", RAZORPAY_KEY_ID),
+                                  ("RAZORPAY_KEY_SECRET", RAZORPAY_KEY_SECRET),
+                                  ("RAZORPAY_WEBHOOK_SECRET", RAZORPAY_WEBHOOK_SECRET)) if not v]
+        rz = ("✅ ready" if not missing else "❌ band — missing: " + ", ".join(missing))
+        return ("👑 <b>Tum admin ho</b> — tumhare liye plan ki zaroorat nahi, sab hamesha chalu hai.\n\n"
+                f"<b>Payment status (sirf tumhe dikhta hai):</b>\n"
+                f"💳 Razorpay: {rz}\n"
+                f"⭐ Stars: {'✅ ON' if STARS_ENABLED else '❌ OFF'}\n"
+                f"🔗 Webhook path: <code>{esc(RAZORPAY_WEBHOOK_PATH)}</code> (ya sirf domain)")
     u = get_user(uid) or {}
     if is_active(uid, u):
         left = days_left(u)
@@ -89,9 +98,9 @@ def plan_kb(uid: int):
         return None
     rows = []
     if razorpay_ready():
-        rows.append([InlineKeyboardButton(f"💳 UPI / Card se ₹{PRICE_INR}", callback_data="pay_rzp")])
+        rows.append([btn(f"💳 UPI / Card se ₹{PRICE_INR}", GREEN, callback_data="pay_rzp")])
     if STARS_ENABLED:
-        rows.append([InlineKeyboardButton(f"⭐ Telegram Stars se {PRICE_STARS}⭐", callback_data="pay_stars")])
+        rows.append([btn(f"⭐ Telegram Stars se {PRICE_STARS}⭐", BLUE, callback_data="pay_stars")])
     if not rows:
         return None
     return InlineKeyboardMarkup(rows)
@@ -209,6 +218,7 @@ def build_web_app(application) -> web.Application:
         except Exception:
             return web.json_response({"error": "bad json"}, status=400)
         parsed = _parse_paid(payload)
+        logger.info(f"Razorpay webhook: {payload.get('event')} → {parsed}")
         if not parsed:
             return web.json_response({"status": "ignored"})
         receipt, link_id, payment_id = parsed
@@ -233,6 +243,9 @@ def build_web_app(application) -> web.Application:
     app.router.add_get("/", health)
     app.router.add_get("/health", health)
     app.router.add_post(RAZORPAY_WEBHOOK_PATH, razorpay_webhook)
+    # Razorpay mein sirf domain daal diya (path ke bina) tab bhi chale
+    if RAZORPAY_WEBHOOK_PATH != "/":
+        app.router.add_post("/", razorpay_webhook)
     return app
 
 
@@ -324,6 +337,12 @@ async def handle_billing_callback(query, context, uid: int, data: str) -> bool:
             url = await _razorpay_create_link(uid, receipt)
         except Exception as e:
             logger.error(f"Razorpay link fail: {e}")
+            for aid in ADMIN_IDS:
+                await dm_user(context.bot, aid,
+                              f"🚨 <b>Razorpay link nahi bana</b> (user <code>{uid}</code>)\n"
+                              f"<code>{esc(str(e)[:200])}</code>\n\n"
+                              "<i>RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET check karo "
+                              "(live/test dono ek hi mode ke hon).</i>", parse_mode=ParseMode.HTML)
             await query.message.reply_text("❌ Payment link nahi ban paya. Thodi der baad try karo.\n"
                                            + support_line())
             return True

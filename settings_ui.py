@@ -20,6 +20,9 @@ from engine import (
     QUEUE_MAX_AGE_HOURS, POST_GAP_SECONDS,
 )
 from storage import load_config, save_config, find_users_by_source, utcnow, TZ_NAME
+from card import WM_POSITIONS
+from ui import btn, BUTTON_STYLES, next_style, GREEN, RED
+import card_ui
 
 logger = logging.getLogger(__name__)
 
@@ -159,8 +162,9 @@ def settings_home_kb(cfg: dict) -> InlineKeyboardMarkup:
          InlineKeyboardButton("📢 Post Channel", callback_data="set_channel")],
         [InlineKeyboardButton("📥 Draft Channel", callback_data="set_source"),
          InlineKeyboardButton("🛍️ Post Details", callback_data="set_amz")],
+        [btn("🎨 Image Card", GREEN, callback_data="card_home")],
         [InlineKeyboardButton("🎛️ Buttons", callback_data="sb_main"),
-         InlineKeyboardButton("🖼️ Watermark", callback_data="set_wm")],
+         InlineKeyboardButton("💧 Watermark", callback_data="set_wm")],
         [InlineKeyboardButton("🔝 Header", callback_data="set_header"),
          InlineKeyboardButton("🔚 Footer", callback_data="set_footer")],
         [InlineKeyboardButton("🔔 Notification", callback_data="set_silent"),
@@ -247,17 +251,20 @@ def wm_text(wm: dict) -> str:
     return (
         f"🖼️ <b>Watermark</b>\n\n"
         f"Status : <b>{'✅ ON' if wm.get('enabled') else '❌ OFF'}</b>\n"
-        f"Text   : <code>{esc(wm.get('text') or 'set nahi')}</code>\n\n"
-        f"<i>Product photo ke neeche right corner pe tumhara naam lagta hai "
-        f"(jaise @MyDeals), taaki koi photo copy kare to bhi tumhara naam dikhe.</i>"
+        f"Text   : <code>{esc(wm.get('text') or 'set nahi')}</code>\n"
+        f"Jagah  : <b>{WM_POSITIONS.get(wm.get('position'), WM_POSITIONS['bottom_right'])}</b>\n\n"
+        f"<i>Photo pe tumhara naam (jaise @MyDeals ya 'Posted On My Deals') — card "
+        f"aur normal photo dono pe lagta hai. 'Upar beech' chuno to photo ke upar "
+        f"saaf line jaisa dikhega.</i>"
     )
 
 
 def wm_kb(wm: dict) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("✏️ Text badlo", callback_data="wm_set_text")],
-        [InlineKeyboardButton("🔴 Band karo" if wm.get("enabled") else "🟢 Chalu karo",
-                              callback_data="wm_toggle")],
+        [InlineKeyboardButton("✏️ Text badlo", callback_data="wm_set_text"),
+         InlineKeyboardButton("📍 Jagah badlo", callback_data="card_p:wm_position")],
+        [btn("🔴 Band karo" if wm.get("enabled") else "🟢 Chalu karo",
+             RED if wm.get("enabled") else GREEN, callback_data="wm_toggle")],
         BACK_ROW,
     ])
 
@@ -345,15 +352,18 @@ def sb_text(btns: dict) -> str:
         else "link post ke text mein rehta hai"
     return (
         "🎛️ <b>Post ke neeche Buttons</b>\n\n"
-        f"⚡ <b>Buy Now</b> — {_onoff(buy.get('enabled'))}  ({esc(buy.get('label', '-'))})\n"
+        f"⚡ <b>Buy Now</b> — {_onoff(buy.get('enabled'))}  ({esc(buy.get('label', '-'))}) "
+        f"{BUTTON_STYLES.get(buy.get('style', ''), '')}\n"
         f"   <i>ON karne pe {link_note}.</i>\n\n"
-        f"🛒 <b>Add to Cart</b> — {_onoff(cart.get('enabled'))}  ({esc(cart.get('label', '-'))})\n"
+        f"🛒 <b>Add to Cart</b> — {_onoff(cart.get('enabled'))}  ({esc(cart.get('label', '-'))}) "
+        f"{BUTTON_STYLES.get(cart.get('style', ''), '')}\n"
         f"   <i>Cart mein jaane se kamai ka time 24 ghante se 89 din ho jaata hai.</i>\n\n"
         f"📌 <b>Button 1</b> — {_onoff(b1.get('enabled'))}  {esc(b1.get('label', '-'))}\n"
         f"   Link: <code>{esc(b1.get('url') or '—')}</code>\n"
         f"📌 <b>Button 2</b> — {_onoff(b2.get('enabled'))}  {esc(b2.get('label', '-'))}\n"
         f"   Link: <code>{esc(b2.get('url') or '—')}</code>\n\n"
-        f"<i>Buy Now aur Cart sirf Amazon post pe lagte hain, tumhare tag ke saath.</i>"
+        f"<i>Buy Now aur Cart sirf Amazon post pe lagte hain, tumhare tag ke saath. "
+        f"Har button ka rang alag chun sakte ho (🎨 Rang).</i>"
     )
 
 
@@ -376,13 +386,16 @@ def amz_btn_text(key: str, b: dict) -> str:
              if key == "buy" else "Product seedha customer ke cart mein jaata hai.")
     return (f"<b>{name} Button</b>\n\n"
             f"Naam   : <b>{esc(b.get('label', '-'))}</b>\n"
-            f"Status : {_onoff(b.get('enabled'))}\n\n"
+            f"Status : {_onoff(b.get('enabled'))}\n"
+            f"Rang   : {BUTTON_STYLES.get(b.get('style', ''), '⚪ Normal')}\n\n"
             f"<i>Link main khud banata hoon tumhare tag se. {extra}</i>")
 
 
 def amz_btn_kb(key: str, b: dict) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📝 Naam badlo", callback_data=f"sb_{key}_rename")],
+        [InlineKeyboardButton("📝 Naam badlo", callback_data=f"sb_{key}_rename"),
+         btn(f"🎨 Rang: {BUTTON_STYLES.get(b.get('style', ''), '⚪ Normal')}", b.get("style", ""),
+             callback_data=f"sb_{key}_color")],
         [InlineKeyboardButton("🔴 Band karo" if b.get("enabled") else "🟢 Chalu karo",
                               callback_data=f"sb_{key}_toggle")],
         [InlineKeyboardButton("⬅️ Back", callback_data="sb_main")],
@@ -393,7 +406,8 @@ def btn_text(key: str, btn: dict) -> str:
     return (f"🎛️ <b>Button {key[-1]}</b>\n\n"
             f"📝 Naam  : <b>{esc(btn.get('label', '-'))}</b>\n"
             f"🔗 Link  : <code>{esc(btn.get('url') or 'set nahi')}</code>\n"
-            f"Status : {_onoff(btn.get('enabled'))}\n\n"
+            f"Status : {_onoff(btn.get('enabled'))}\n"
+            f"Rang   : {BUTTON_STYLES.get(btn.get('style', ''), '⚪ Normal')}\n\n"
             f"<i>Jaise 'Join Channel' button jo tumhare channel pe le jaaye.</i>")
 
 
@@ -401,6 +415,9 @@ def btn_kb(key: str, btn: dict) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📝 Naam badlo", callback_data=f"sb_{key}_rename"),
          InlineKeyboardButton("🔗 Link daalo", callback_data=f"sb_{key}_link")],
+        [InlineKeyboardButton(f"🎨 Rang: {BUTTON_STYLES.get(btn.get('style', ''), '⚪ Normal')}",
+                              callback_data=f"sb_{key}_color",
+                              api_kwargs={"style": btn["style"]} if btn.get("style") else None)],
         [InlineKeyboardButton("🔴 Band karo" if btn.get("enabled") else "🟢 Chalu karo",
                               callback_data=f"sb_{key}_toggle")],
         [InlineKeyboardButton("⬅️ Back", callback_data="sb_main")],
@@ -660,6 +677,9 @@ async def handle_settings_callback(query, context, uid: int, data: str) -> bool:
         for k, v in extra.items():
             context.user_data[k] = v
 
+    if await card_ui.handle_card_callback(query, context, uid, data):
+        return True
+
     # ── Settings home + sections ──────────────────────────────────────────
     if data == "set_home":
         context.user_data.pop("action", None)
@@ -825,7 +845,7 @@ async def handle_settings_callback(query, context, uid: int, data: str) -> bool:
         wm = cfg.setdefault("watermark", {"enabled": False, "text": ""})
         if not wm.get("enabled") and not (wm.get("text") or "").strip():
             ask("wm_wait_text")
-            await show("✏️ Pehle watermark ka text bhejo (jaise @MyDeals, max 30 character):")
+            await show("✏️ Pehle watermark ka text bhejo (jaise @MyDeals, max 40 character):")
             return True
         wm["enabled"] = not wm.get("enabled", False)
         save_config(uid, cfg)
@@ -833,7 +853,7 @@ async def handle_settings_callback(query, context, uid: int, data: str) -> bool:
         return True
     if data == "wm_set_text":
         ask("wm_wait_text")
-        await show("✏️ Naya watermark text bhejo (jaise @MyDeals, max 30 character):")
+        await show("✏️ Naya watermark text bhejo (jaise @MyDeals ya Posted On My Deals, max 40 character):")
         return True
     if data == "wm_confirm_text":
         new_text = context.user_data.pop("wm_pending_text", None)
@@ -873,6 +893,19 @@ async def handle_settings_callback(query, context, uid: int, data: str) -> bool:
             await show(f"🔗 Pehle Button {key[-1]} ka link bhejo (https:// ya t.me/ se shuru):")
             return True
         b["enabled"] = not b.get("enabled", False)
+        save_config(uid, cfg)
+        if key in ("buy", "cart"):
+            await show(amz_btn_text(key, b), amz_btn_kb(key, b))
+        else:
+            await show(btn_text(key, b), btn_kb(key, b))
+        return True
+    if data.startswith("sb_") and data.endswith("_color"):
+        key = data[3:-6]
+        if key not in ("buy", "cart", "btn1", "btn2"):
+            return True
+        cfg = load_config(uid)
+        b = cfg.setdefault("buttons", {}).setdefault(key, {})
+        b["style"] = next_style(b.get("style", ""))
         save_config(uid, cfg)
         if key in ("buy", "cart"):
             await show(amz_btn_text(key, b), amz_btn_kb(key, b))
@@ -950,8 +983,8 @@ async def handle_settings_input(update: Update, context, uid: int, action: str) 
         return True
 
     if action == "wm_wait_text":
-        if not text or len(text) > 30:
-            await reply("⚠️ 1 se 30 character ke beech bhejo.")
+        if not text or len(text) > 40:
+            await reply("⚠️ 1 se 40 character ke beech bhejo.")
             return True
         context.user_data["wm_pending_text"] = text
         context.user_data["action"] = None

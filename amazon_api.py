@@ -171,17 +171,28 @@ def extract_asin(url: str) -> str | None:
     return None
 
 
-def is_amazon_url(url: str) -> bool:
-    """'amazon'/'amzn' poora domain label hona chahiye — fake domains pakde nahi jayenge."""
+_AMAZON_HOST_RE = re.compile(
+    r"(?:^|\.)amazon\.(?:in|com|co\.uk|de|fr|it|es|ca|co\.jp|com\.au|com\.br|com\.mx|ae|sa|sg|nl|"
+    r"se|pl|com\.tr|com\.be|eg)$"
+)
+_SHORT_HOSTS = {"amzn.to", "amzn.in", "amzn.eu", "amzn.asia", "a.co"}
+
+
+def _host(url: str) -> str:
     try:
-        host = urllib.parse.urlparse(url).netloc.lower().split(":")[0].strip(".")
+        host = urllib.parse.urlparse(url).netloc.lower().split("@")[-1].split(":")[0].strip(".")
     except Exception:
-        return False
+        return ""
+    return host[4:] if host.startswith("www.") else host
+
+
+def is_amazon_url(url: str) -> bool:
+    """Sirf asli Amazon domains — amazon.evil.com jaise fake domain nahi."""
+    host = _host(url)
     if not host:
         return False
-    if host in ("a.co", "www.a.co"):
-        return True
-    return any(lbl in ("amazon", "amzn") for lbl in host.split("."))
+    return (host in _SHORT_HOSTS or bool(_AMAZON_HOST_RE.search(host))
+            or host == "amazon" or host.endswith(".amazon"))
 
 
 def is_amazon_search_url(url: str) -> bool:
@@ -209,7 +220,8 @@ def is_amazon_search_url(url: str) -> bool:
 
 
 def needs_redirect(url: str) -> bool:
-    return any(d in url for d in NEEDS_REDIRECT)
+    host = _host(url)
+    return host in _SHORT_HOSTS or host.endswith(".amazon") or host == "amazon"
 
 
 def _strip_tag_param(url: str) -> str:
