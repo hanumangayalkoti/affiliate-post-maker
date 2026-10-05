@@ -143,8 +143,10 @@ async def _razorpay_create_link(uid: int, receipt: str) -> str:
             if resp.status >= 400 or not data.get("id") or not data.get("short_url"):
                 err = (data.get("error") or {}).get("description") or f"HTTP {resp.status}"
                 raise RuntimeError(err)
-            payment_create_pending(uid, "razorpay", data["id"], receipt,
-                                   PRICE_INR * 100, "INR", PLAN_DAYS)
+            # Pehle DB mein save — fail hua to link mat do, warna paisa kat ke plan nahi milega
+            if not payment_create_pending(uid, "razorpay", data["id"], receipt,
+                                          PRICE_INR * 100, "INR", PLAN_DAYS):
+                raise RuntimeError("payment record save nahi hua")
             return data["short_url"]
 
 

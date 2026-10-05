@@ -13,6 +13,8 @@ from datetime import datetime, timedelta, timezone
 import psycopg2
 from psycopg2 import pool as pg_pool
 
+from card import DEFAULT_CARD, clean_card
+
 logger = logging.getLogger(__name__)
 
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -91,7 +93,8 @@ DEFAULT_CONFIG = {
     "amz_fields":         DEFAULT_AMZ_FIELDS,
     "header":             {"enabled": False, "text": ""},
     "footer":             {"enabled": False, "text": ""},
-    "watermark":          {"enabled": False, "text": ""},
+    "watermark":          {"enabled": False, "text": "", "position": "bottom_right"},
+    "card":               DEFAULT_CARD,    # image card (card.py)
     "buttons": {
         "btn1": {"label": "Join Channel", "url": "", "enabled": False},
         "btn2": {"label": "More Deals",   "url": "", "enabled": False},
@@ -317,7 +320,7 @@ def _migrate_old_admin_data():
 def _fill_defaults(cfg: dict) -> dict:
     """Jo key missing hai wo default se bhar do — purani config bhi chalti rahe."""
     for k, v in DEFAULT_CONFIG.items():
-        if k in ("amz_fields", "header", "footer", "watermark", "buttons"):
+        if k in ("amz_fields", "header", "footer", "watermark", "buttons", "card"):
             continue
         cfg.setdefault(k, copy.deepcopy(v))
 
@@ -331,6 +334,9 @@ def _fill_defaults(cfg: dict) -> dict:
             d = cfg[key] = {}
         d.setdefault("enabled", False)
         d.setdefault("text", "")
+    cfg["watermark"].setdefault("position", "bottom_right")
+
+    cfg["card"] = clean_card(cfg.get("card"))
 
     btns = cfg.setdefault("buttons", {})
     for bk, bv in DEFAULT_CONFIG["buttons"].items():
@@ -340,8 +346,19 @@ def _fill_defaults(cfg: dict) -> dict:
     return cfg
 
 
+# Config cache — har message pe DB na jaana pade. Saari writes save_config se
+# hoti hain, wahi cache bhi update karta hai. Asli data hamesha DB mein hai,
+# isliye restart / redeploy pe kuch nahi khota.
+_cfg_cache: dict = {}
+_cfg_lock = threading.Lock()
+
+
 def load_config(user_id: int) -> dict:
     """User ki settings lao. Pehli baar hai to default."""
+    with _cfg_lock:
+        hit = _cfg_cache.get(user_id)
+    if hit is not None:
+        return copy.deepcopy(hit)
     try:
         with get_db() as conn:
             with conn.cursor() as cur:
@@ -349,13 +366,23 @@ def load_config(user_id: int) -> dict:
                 row = cur.fetchone()
         if row:
             data = row[0] if isinstance(row[0], dict) else json.loads(row[0])
-            return _fill_defaults(data)
+            cfg = _fill_defaults(data)
+            with _cfg_lock:
+                _cfg_cache[user_id] = copy.deepcopy(cfg)
+            return cfg
+        cfg = _fill_defaults(copy.deepcopy(DEFAULT_CONFIG))
+        if user_id == ADMIN_ID:
+            cfg["tag"] = os.getenv("PARTNER_TAG", "")
+        with _cfg_lock:
+            _cfg_cache[user_id] = copy.deepcopy(cfg)   # naya user — default
+        return cfg
     except Exception as e:
+        # DB fail — default do par cache mat karo, agli baar DB se try hoga
         logger.error(f"Config load error ({user_id}): {e}")
-    cfg = copy.deepcopy(DEFAULT_CONFIG)
-    if user_id == ADMIN_ID:
-        cfg["tag"] = os.getenv("PARTNER_TAG", "")
-    return cfg
+        cfg = _fill_defaults(copy.deepcopy(DEFAULT_CONFIG))
+        if user_id == ADMIN_ID:
+            cfg["tag"] = os.getenv("PARTNER_TAG", "")
+        return cfg
 
 
 def save_config(user_id: int, config: dict) -> bool:
@@ -369,8 +396,12 @@ def save_config(user_id: int, config: dict) -> bool:
                     """,
                     (user_id, json.dumps(config, ensure_ascii=False)),
                 )
+        with _cfg_lock:
+            _cfg_cache[user_id] = _fill_defaults(copy.deepcopy(config))
         return True
     except Exception as e:
+        with _cfg_lock:
+            _cfg_cache.pop(user_id, None)
         logger.error(f"Config save error ({user_id}): {e}")
         return False
 

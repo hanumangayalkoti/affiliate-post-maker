@@ -3,7 +3,9 @@ users.py — user record, plan (expiry), admin ke manual din, block,
 payments ka record aur activation.
 """
 import os
+import time
 import logging
+import threading
 from datetime import datetime, timedelta
 
 from storage import get_db, utcnow, local_day_start_utc
@@ -34,11 +36,24 @@ def is_admin(uid) -> bool:
     return bool(uid) and uid in ADMIN_IDS
 
 
+# get_user ka chhota cache — ek message pe 4-5 baar same user DB se na aaye.
+# Har write ke baad us user ka cache hata dete hain; TTL sirf safety ke liye.
+_USER_TTL = 20
+_user_cache: dict = {}
+_user_lock = threading.Lock()
+
+
+def _forget(user_id):
+    with _user_lock:
+        _user_cache.pop(user_id, None)
+
+
 # =============================================================================
 # USER RECORD
 # =============================================================================
 def upsert_user(user_id: int, username: str = "", first_name: str = "") -> bool:
     """User ko register/update karo. True agar bilkul naya user hai."""
+    _forget(user_id)
     try:
         with get_db() as conn:
             with conn.cursor() as cur:
@@ -61,13 +76,25 @@ def upsert_user(user_id: int, username: str = "", first_name: str = "") -> bool:
 
 
 def get_user(user_id: int):
+    now = time.monotonic()
+    with _user_lock:
+        hit = _user_cache.get(user_id)
+    if hit and now - hit[0] < _USER_TTL:
+        return dict(hit[1])
     try:
         with get_db() as conn:
             with conn.cursor() as cur:
                 cur.execute(f"SELECT {', '.join(_USER_COLS)} FROM users WHERE user_id = %s",
                             (user_id,))
                 r = cur.fetchone()
-        return dict(zip(_USER_COLS, r)) if r else None
+        if not r:
+            return None
+        u = dict(zip(_USER_COLS, r))
+        with _user_lock:
+            if len(_user_cache) > 5000:
+                _user_cache.clear()
+            _user_cache[user_id] = (now, u)
+        return dict(u)
     except Exception as e:
         logger.error(f"get_user error: {e}")
         return None
@@ -120,6 +147,7 @@ def days_left(user: dict) -> float:
 
 def _add_days_cur(cur, user_id: int, days: float):
     """Usi transaction ke andar din jodo/kaato. Nayi expiry ya None (user nahi mila)."""
+    _forget(user_id)
     cur.execute("SELECT expires_at FROM users WHERE user_id = %s FOR UPDATE", (user_id,))
     row = cur.fetchone()
     if row is None:
@@ -143,13 +171,16 @@ def add_days(user_id: int, days: float):
     try:
         with get_db() as conn:
             with conn.cursor() as cur:
-                return _add_days_cur(cur, user_id, days)
+                new_exp = _add_days_cur(cur, user_id, days)
+        _forget(user_id)          # commit ke baad — beech mein purana data cache na ho
+        return new_exp
     except Exception as e:
         logger.error(f"add_days error: {e}")
         return None
 
 
 def end_plan(user_id: int) -> bool:
+    _forget(user_id)
     try:
         with get_db() as conn:
             with conn.cursor() as cur:
@@ -161,6 +192,7 @@ def end_plan(user_id: int) -> bool:
 
 
 def set_blocked(user_id: int, blocked: bool) -> bool:
+    _forget(user_id)
     try:
         with get_db() as conn:
             with conn.cursor() as cur:
@@ -172,6 +204,7 @@ def set_blocked(user_id: int, blocked: bool) -> bool:
 
 
 def mark_bot_blocked(user_id: int):
+    _forget(user_id)
     try:
         with get_db() as conn:
             with conn.cursor() as cur:
@@ -181,6 +214,7 @@ def mark_bot_blocked(user_id: int):
 
 
 def set_remind_stage(user_id: int, stage: int):
+    _forget(user_id)
     try:
         with get_db() as conn:
             with conn.cursor() as cur:
@@ -322,6 +356,7 @@ def payment_mark_paid_razorpay(receipt: str, link_id: str, payment_id: str):
                 new_exp = _add_days_cur(cur, row[0], row[1])
                 if new_exp is None:
                     raise RuntimeError(f"payment user {row[0]} nahi mila")
+        _forget(row[0])
         return row[0], row[1], new_exp, row[2]
     except Exception as e:
         logger.error(f"payment_mark_paid error: {e}")
@@ -348,7 +383,8 @@ def payment_record_stars(user_id: int, charge_id: str, amount: int, days: int):
                 new_exp = _add_days_cur(cur, user_id, days)
                 if new_exp is None:
                     raise RuntimeError(f"stars user {user_id} nahi mila")
-                return new_exp
+        _forget(user_id)
+        return new_exp
     except Exception as e:
         logger.error(f"payment_record_stars error: {e}")
         return None
