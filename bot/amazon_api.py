@@ -12,7 +12,9 @@ import time
 import asyncio
 import logging
 import aiohttp
+import ipaddress
 import urllib.parse
+from collections import OrderedDict
 from datetime import datetime, timedelta
 
 from database import cache_get, cache_put_many
@@ -159,7 +161,7 @@ def extract_asin(url: str) -> str | None:
     m = ASIN_PAT.search(url)
     if m:
         return m.group(1).upper()
-    q = re.search(r"[?&]ASIN=([A-Za-z0-9]{10})", url)
+    q = re.search(r"[?&](?:ASIN|asin|ASIN\.1)=([A-Za-z0-9]{10})", url)
     if q:
         return q.group(1).upper()
     try:
@@ -272,7 +274,188 @@ async def _resolve_redirect(url: str) -> str:
         return url
 
 
+# =============================================================================
+# THIRD-PARTY SHORT LINKS (amzn-to.co, bit.ly, ...) — peeche chhupa Amazon link
+# =============================================================================
+# Kai deal channel apne shortener use karte hain (jaise https://amzn-to.co/AZR77S).
+# Domain Amazon ka nahi hota, isliye pehle bot inhe pehchaan hi nahi paata tha.
+# Ab aise link ko kholke dekhte hain: redirect follow karte hain, aur agar
+# shortener beech mein HTML page dikhata hai to page ke andar Amazon link
+# (meta refresh / JavaScript / href) dhoondhte hain.
+
+# In domains ke peeche Amazon kabhi nahi hota — inhe kholna time ki barbaadi hai.
+_NEVER_AMAZON_HOSTS = (
+    "t.me", "telegram.me", "telegram.org", "wa.me", "whatsapp.com",
+    "youtube.com", "youtu.be", "instagram.com", "facebook.com", "fb.com",
+    "twitter.com", "x.com", "google.com", "goo.gl", "play.google.com",
+    "flipkart.com", "fkrt.it", "fkrt.cc", "myntra.com", "myntr.it",
+    "ajio.com", "ajiio.in", "meesho.com", "nykaa.com", "tatacliq.com",
+    "jiomart.com", "shopsy.in", "croma.com", "snapdeal.com",
+)
+_MAX_HOPS        = 8
+_MAX_BODY_BYTES  = 300_000
+_UNSHORT_TIMEOUT = 10
+_UNSHORT_CACHE_MAX = 3000
+# url -> mila hua Amazon link ("" = iske peeche Amazon nahi hai)
+_unshort_cache: "OrderedDict[str, str]" = OrderedDict()
+
+_HTML_AMAZON_RE = re.compile(
+    r"https?:(?:\\?/){2}(?:[a-z0-9-]+\.)*(?:amazon\.[a-z.]{2,10}|amzn\.(?:to|in|eu|asia)|a\.co)"
+    r"(?:\\?/[^\s\"'<>()]*)?",
+    re.IGNORECASE,
+)
+_META_REFRESH_RE = re.compile(
+    r"<meta[^>]+http-equiv=[\"']?refresh[^>]*content=[\"']?\s*\d*\s*;?\s*url=([^\"'>\s]+)",
+    re.IGNORECASE,
+)
+_JS_LOCATION_RE = re.compile(
+    r"(?:window\.|document\.|top\.)?location(?:\.href)?\s*(?:=|\.replace\(|\.assign\()\s*[\"']([^\"']+)[\"']",
+    re.IGNORECASE,
+)
+
+
+def _cache_unshort(url: str, value: str) -> None:
+    _unshort_cache[url] = value
+    _unshort_cache.move_to_end(url)
+    while len(_unshort_cache) > _UNSHORT_CACHE_MAX:
+        _unshort_cache.popitem(last=False)
+
+
+def cached_amazon_target(url: str) -> str:
+    """Pehle se pata hai ki is link ke peeche Amazon hai? To wo link, warna ""."""
+    return _unshort_cache.get(url, "")
+
+
+def is_known_amazon(url: str) -> bool:
+    """Asli Amazon link, YA aisa short link jiske peeche Amazon mil chuka hai."""
+    return is_amazon_url(url) or bool(cached_amazon_target(url))
+
+
+def _is_public_host(host: str) -> bool:
+    """Server ke andar ke address (localhost, 10.x, *.internal) kabhi mat kholo."""
+    if not host or "." not in host:
+        return False
+    if host == "localhost" or host.endswith((".local", ".internal", ".localhost")):
+        return False
+    try:
+        ip = ipaddress.ip_address(host.strip("[]"))
+    except ValueError:
+        return True
+    return ip.is_global
+
+
+def _never_amazon(host: str) -> bool:
+    return any(host == h or host.endswith("." + h) for h in _NEVER_AMAZON_HOSTS)
+
+
+def _clean_found_url(u: str) -> str:
+    u = u.replace("\\/", "/").replace("&amp;", "&").replace("\\u0026", "&")
+    return u.rstrip(".,;)")
+
+
+def _amazon_url_in_html(body: str) -> str:
+    """Page mein jitne Amazon link hain, unme se ASIN wala pehle, warna pehla."""
+    found = [_clean_found_url(m.group(0)) for m in _HTML_AMAZON_RE.finditer(body)]
+    found = [u for u in found if is_amazon_url(u)]
+    for u in found:
+        if extract_asin(u):
+            return u
+    for u in found:
+        if needs_redirect(u):
+            return u
+    return ""
+
+
+def _next_hop_in_html(body: str, base: str) -> str:
+    """Meta refresh ya JavaScript redirect wala agla link (Amazon na ho tab bhi)."""
+    for rx in (_META_REFRESH_RE, _JS_LOCATION_RE):
+        m = rx.search(body)
+        if m:
+            return urllib.parse.urljoin(base, _clean_found_url(m.group(1).strip()))
+    return ""
+
+
+async def find_amazon_behind(url: str) -> str:
+    """
+    Non-Amazon dikhne wale link ke peeche Amazon product hai to wo Amazon link
+    lautao, warna "". Result cache hota hai, isliye same link dobara nahi khulta.
+    """
+    if not url:
+        return ""
+    if is_amazon_url(url):
+        return url
+    if url in _unshort_cache:
+        return _unshort_cache[url]
+
+    found = ""
+    cur = url
+    try:
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=_UNSHORT_TIMEOUT),
+            headers={
+                "User-Agent": ("Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 "
+                               "(KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36"),
+                "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+            },
+        ) as session:
+            for _ in range(_MAX_HOPS):
+                if is_amazon_url(cur):
+                    found = cur
+                    break
+                host = _host(cur)
+                if urllib.parse.urlparse(cur).scheme not in ("http", "https"):
+                    break
+                if not _is_public_host(host) or _never_amazon(host):
+                    break
+                async with session.get(cur, allow_redirects=False) as resp:
+                    location = resp.headers.get("Location")
+                    if resp.status in (301, 302, 303, 307, 308) and location:
+                        cur = urllib.parse.urljoin(cur, location)
+                        continue
+                    if "html" not in (resp.headers.get("Content-Type") or "").lower():
+                        break
+                    raw = await resp.content.read(_MAX_BODY_BYTES)
+                    body = raw.decode(resp.charset or "utf-8", errors="ignore")
+                inside = _amazon_url_in_html(body)
+                if inside:
+                    found = inside
+                    break
+                nxt = _next_hop_in_html(body, cur)
+                if not nxt or nxt == cur:
+                    break
+                cur = nxt
+    except Exception as e:
+        logger.info(f"Short link check fail ({url[:60]}): {e}")
+        # Network ki gadbad pe "" cache nahi karte — agli baar phir try hoga
+        return ""
+
+    if found and not extract_asin(found) and needs_redirect(found):
+        found = await _resolve_redirect(found)
+        if not is_amazon_url(found):
+            found = ""
+    _cache_unshort(url, found)
+    if found:
+        logger.info(f"Short link {url[:60]} -> {found[:100]}")
+    return found
+
+
+async def find_amazon_behind_many(urls: list, limit: int = 10) -> list:
+    """Message ke non-Amazon links mein se jinke peeche Amazon hai (saath-saath check)."""
+    todo = []
+    for u in urls:
+        if u and u not in todo and not is_amazon_url(u):
+            todo.append(u)
+    todo = todo[:limit]
+    if not todo:
+        return []
+    results = await asyncio.gather(*(find_amazon_behind(u) for u in todo), return_exceptions=True)
+    return [u for u, r in zip(todo, results) if isinstance(r, str) and r]
+
+
 async def resolve_amazon_url(url: str) -> str:
+    target = cached_amazon_target(url)
+    if target:
+        url = target
     if needs_redirect(url):
         return await _resolve_redirect(url)
     return url
@@ -280,6 +463,8 @@ async def resolve_amazon_url(url: str) -> str:
 
 async def get_short_affiliate_link(url: str, tag: str) -> str:
     """Kisi bhi Amazon link pe user ka tag lagao (purana tag hata ke)."""
+    if not is_amazon_url(url):
+        url = cached_amazon_target(url) or await find_amazon_behind(url) or url
     asin = extract_asin(url)
     resolved = url
     if not asin and needs_redirect(url):

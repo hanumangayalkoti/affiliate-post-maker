@@ -40,7 +40,7 @@ import task_ui
 from alerts import notify_admins, who
 from database import cache_cleanup, post_log_cleanup, cleanup_old_entries, user_stats
 from engine import (
-    process_and_post, is_own_message, extract_urls, hidden_link_urls, get_amazon_urls,
+    process_and_post, is_own_message, extract_urls, hidden_link_urls, get_amazon_urls_deep,
     remember_own, dm_user, chat_matches, fmt_date, day_start_naive, SELF_MARKER,
     posts_left_today,
 )
@@ -346,10 +346,10 @@ async def cmd_cancel(update, context, uid):
                 InlineKeyboardMarkup([HOME_ROW]))
 
 
-def _has_amazon_link(msg) -> bool:
+async def _has_amazon_link(msg) -> bool:
     text = (msg.text or msg.caption or "")
     ents = list(msg.entities or []) + list(msg.caption_entities or [])
-    return bool(get_amazon_urls(extract_urls(text) + hidden_link_urls(ents)))
+    return bool(await get_amazon_urls_deep(extract_urls(text) + hidden_link_urls(ents)))
 
 
 # =============================================================================
@@ -377,7 +377,7 @@ async def handle_private(update: Update, context: ContextTypes.DEFAULT_TYPE):
     action = (context.user_data or {}).get("action")
     # Bot ne kuch aur poocha tha (tag / naam / text) par user ne deal bhej di —
     # sawaal chhodo, deal post karo. Jin sawaalon ka jawab link hi hai unhe nahi chhedte.
-    if action and action not in task_ui.LINK_ACTIONS and _has_amazon_link(msg):
+    if action and action not in task_ui.LINK_ACTIONS and await _has_amazon_link(msg):
         context.user_data.pop("action", None)
         action = None
     if action:

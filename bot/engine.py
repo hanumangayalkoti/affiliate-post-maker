@@ -20,6 +20,7 @@ from amazon_api import (
     is_amazon_url, is_amazon_search_url, resolve_amazon_url,
     extract_asin, get_products_by_asins,
     make_affiliate_url, make_cart_url, get_short_affiliate_link,
+    is_known_amazon, find_amazon_behind_many,
 )
 from caption import build_amazon_caption, wrap_plain_post, FIELD_LABELS
 from database import is_duplicate, mark_posted, log_post, posts_today, normalise_caption
@@ -123,6 +124,17 @@ def hidden_link_urls(entities) -> list:
 
 def get_amazon_urls(urls: list) -> list:
     return [u for u in urls if is_amazon_url(u)]
+
+
+async def get_amazon_urls_deep(urls: list) -> list:
+    """Seedhe Amazon links + wo short links (amzn-to.co, bit.ly...) jinke peeche
+    Amazon product chhupa hai. Order message wala hi rehta hai."""
+    hidden = set(await find_amazon_behind_many(urls))
+    out = []
+    for u in urls:
+        if u not in out and (is_amazon_url(u) or u in hidden):
+            out.append(u)
+    return out
 
 
 async def _download_image(url: str):
@@ -280,7 +292,7 @@ async def replace_amazon_links(text: str, entities: list, urls: list, tag: str):
     """Har Amazon link (har jagah jahan aaya) pe user ka tag — dikhne wale + chhupe hue."""
     uniq = []
     for u in urls:
-        if u not in uniq and is_amazon_url(u):
+        if u not in uniq and is_known_amazon(u):
             uniq.append(u)
     for url in sorted(uniq, key=len, reverse=True):
         if url not in text:
@@ -299,7 +311,7 @@ async def replace_amazon_links(text: str, entities: list, urls: list, tag: str):
     # Text-link (hidden link) entities mein bhi Amazon link ho sakta hai
     fixed = []
     for ent in (entities or []):
-        if str(getattr(ent.type, "value", ent.type)) == "text_link" and is_amazon_url(ent.url or ""):
+        if str(getattr(ent.type, "value", ent.type)) == "text_link" and is_known_amazon(ent.url or ""):
             try:
                 new_url = await get_short_affiliate_link(ent.url, tag)
                 ent = _Ent(ent.offset, ent.length, "text_link", new_url)
@@ -747,7 +759,8 @@ async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str
         has_photo = bool(msg.photo)
 
     all_urls    = extract_urls(raw_plain) + hidden_link_urls(raw_entities)
-    amazon_urls = get_amazon_urls(all_urls)
+    # Third-party short links (amzn-to.co jaise) bhi kholke dekhte hain
+    amazon_urls = await get_amazon_urls_deep(all_urls)
 
     if not raw_plain.strip() and not all_urls and not has_photo and not (
             msg.document or msg.video or msg.animation or msg.video_note):
