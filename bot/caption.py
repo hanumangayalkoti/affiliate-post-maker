@@ -189,8 +189,9 @@ def build_amazon_caption(product: dict, short_link: str, cfg: dict,
 
     link_line = ""
     if show_link and short_link:
+        # Khula link (dikhne wala = asli) — Telegram "Open this link?" nahi poochta
         shown = display_link(short_link) or short_link
-        link_line = f'🛒 <b><a href="{_esc(short_link)}">{_esc(shown)}</a></b>'
+        link_line = f'🛒 <b><a href="{_esc(shown)}">{_esc(shown)}</a></b>'
 
     # Header / footer / link ki jagah pehle se reserve
     reserved = 0

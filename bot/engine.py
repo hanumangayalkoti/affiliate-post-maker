@@ -302,8 +302,8 @@ async def replace_amazon_links(text: str, entities: list, urls: list, tag: str):
         except Exception as e:
             logger.error(f"Affiliate link fail: {e}")
             continue
-        # Text mein chhota asli link dikhe (amazon.in/dp/ASIN), tag wala poora
-        # link uske peeche text_link mein rahe.
+        # Chhota asli link, tag ke saath, KHULA dikhe (https://amazon.in/dp/ASIN?tag=..)
+        # — chhupa link nahi, taaki Telegram "Open this link?" na pooche.
         shown = display_link(short) or short
         pos = 0
         for _ in range(20):
@@ -311,16 +311,6 @@ async def replace_amazon_links(text: str, entities: list, urls: list, tag: str):
                                                             start=pos, return_pos=True)
             if pos < 0:
                 break
-            if shown != short:
-                start = pos - len(shown)
-                s16 = _py_to_utf16_len(text[:start])
-                e16 = s16 + _py_to_utf16_len(shown)
-                # Is jagah pe pehle wala "url" / link entity hata do — warna wo bina tag
-                # wale text pe link bana dega
-                entities = [e for e in (entities or [])
-                            if not (str(getattr(e.type, "value", e.type)) in ("url", "text_link")
-                                    and e.offset < e16 and e.offset + e.length > s16)]
-                entities.append(_Ent(s16, e16 - s16, "text_link", short))
     # Text-link (hidden link) entities mein bhi Amazon link ho sakta hai
     fixed = []
     for ent in (entities or []):
