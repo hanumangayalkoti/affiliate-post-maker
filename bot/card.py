@@ -449,12 +449,13 @@ def render_card(photo_bytes: bytes, product: dict, card: dict, wm: dict = None) 
         rating = (product.get("rating") or "").strip()
 
         items = []
+        # Order: Offer Price → uske neeche MRP → phir Discount
         if card["show_price"] and price:
             items.append("price")
-        if card["show_discount"] and pct > 0:
-            items.append("discount")
         if card["show_mrp"] and mrp and mrp != price:
             items.append("mrp")
+        if card["show_discount"] and pct > 0:
+            items.append("discount")
         if card["show_rating"] and rating:
             items.append("rating")
 

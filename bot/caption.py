@@ -103,7 +103,7 @@ def _render_field(name: str, p: dict) -> str | None:
         mrp   = (p.get("actual_price") or "").strip()
         price = (p.get("deal_price") or "").strip()
         if mrp and price and mrp != price:
-            return f"💰 MRP:          <s>{_esc(mrp)}</s>"
+            return f"❌ MRP:          <b><s>{_esc(mrp)}</s></b>"
         return None
 
     if name == "price":
@@ -234,6 +234,10 @@ def build_amazon_caption(product: dict, short_link: str, cfg: dict,
     if drop_line:
         at = 1 if (body and body[0].startswith("🔥")) else 0
         body.insert(at, drop_line)
+
+    # Title ke baad ek khaali line — title aur MRP/price ke beech thodi jagah
+    if len(body) > 1 and body[0].startswith("🔥"):
+        body.insert(1, "")
 
     # ── Assemble ──────────────────────────────────────────────────────────
     parts = []

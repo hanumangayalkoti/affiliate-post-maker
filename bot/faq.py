@@ -11,7 +11,7 @@ from ui import btn, tr
 def _plans(lang):
     return "\n".join(
         f"{t['emoji']} <b>{t['name']}</b> ₹{t['inr']} — {t['tasks']} task, {t['daily']} "
-        f"{tr(lang, 'posts/day', 'post/din')}, Image Card {'✅' if t['card'] else '❌'}"
+        f"{tr(lang, 'posts/day per task', 'post/din har task')}, Image Card {'✅' if t['card'] else '❌'}"
         for t in TIERS.values())
 
 
@@ -95,9 +95,12 @@ def _faqs(lang):
             "mein dobara post nahi hoga.")),
         (tr(lang, "What is the daily limit? When does it reset?", "Daily limit kya hai, kab reset hoti hai?"),
          tr(lang,
-            "It's the number of posts per day for your plan (see /plan). It resets every night at "
-            "12:00 midnight (IST).",
-            "Aapke plan mein roz kitni post ho sakti hain (/plan dekhein). Har raat 12 baje (IST) reset hoti hai.")),
+            "It's the number of posts per day for your plan (see /plan). The limit is for EACH task "
+            "separately — e.g. on Pro (500) with 2 tasks, each task can post 500 a day. It resets every "
+            "night at 12:00 midnight (IST).",
+            "Aapke plan mein roz kitni post ho sakti hain (/plan dekhein). Ye limit HAR TASK ki alag hai — "
+            "jaise Pro (500) mein 2 task hain to dono task roz 500-500 post kar sakte hain. Har raat 12 baje "
+            "(IST) reset hoti hai.")),
         (tr(lang, "What happens if I upgrade or downgrade?", "Plan upgrade/downgrade karne pe kya hoga?"),
          tr(lang,
             "The value of your remaining days is added to the new plan — nothing is lost. On a smaller "

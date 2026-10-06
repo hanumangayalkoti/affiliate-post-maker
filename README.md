@@ -12,7 +12,7 @@ Hinglish dono mein, "aap" wali izzat ke saath.
 |---|---|---|---|
 | Price / 30 din | ₹50 | ₹100 | ₹250 |
 | Tasks | 1 | 2 | 5 |
-| Posts / din | 200 | 500 | 1200 |
+| Posts / din (har task) | 200 | 500 | 1200 |
 | Image Card | ❌ | ✅ | ✅ |
 
 - Naye user ko **7 din Pro free** (ek hi baar)

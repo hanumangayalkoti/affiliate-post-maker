@@ -39,7 +39,7 @@ MAX_PER_MESSAGE  = 15
 SELF_MARKER = "\u2063"        # invisible — bot apne message pehchanne ke liye
 
 # ── TIMEZONE ─────────────────────────────────────────────────────────────
-from storage import LOCAL_TZ, to_local, local_day_start_utc  # noqa: E402
+from storage import LOCAL_TZ, to_local, local_day_start_utc, list_tasks  # noqa: E402
 
 
 def now_local() -> datetime:
@@ -732,14 +732,20 @@ def setup_problems(cfg: dict, lang: str = "hi") -> list:
     return probs
 
 
-def posts_left_today(uid: int):
-    """Aaj kitni post aur kar sakte hain. None = koi limit nahi (admin)."""
+def posts_left_today(uid: int, task_id: int = None):
+    """Is task mein aaj kitni post aur ho sakti hain (limit har task ki alag).
+    task_id na ho to user ka sabse zyada bacha hua task. None = koi limit nahi (admin)."""
     lim = limits(uid)
     if lim.get("key") == "admin":
         return None
     if not lim.get("key"):
         return 0
-    return max(0, lim["daily"] - posts_today(uid))
+    if task_id is not None:
+        return max(0, lim["daily"] - posts_today(uid, task_id))
+    tids = [t["id"] for t in list_tasks(uid)]
+    if not tids:
+        return lim["daily"]
+    return max(max(0, lim["daily"] - posts_today(uid, t)) for t in tids)
 
 
 async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str = "hi",
@@ -792,16 +798,19 @@ async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str
     channel = str(cfg.get("channel", "")).strip()
     tag     = cfg.get("tag", "")
     shown   = chan(cfg.get("channel_title"), cfg.get("channel_username"), channel)
-    footer  = f"\n📋 {esc(tname)} → 📢 {shown}" + source_tag
+    # Amazon post ki report mein wo tag bhi dikhe jisse post hui
+    footer_plain = f"\n📋 {esc(tname)} → 📢 {shown}" + source_tag
+    tag_line = f"\n🏷️ Tag: <code>{esc(tag)}</code>" if tag else ""
+    footer  = f"\n📋 {esc(tname)} → 📢 {shown}" + tag_line + source_tag
 
-    left = posts_left_today(uid)
+    left = posts_left_today(uid, task["id"])
     if left is not None and left <= 0:
         lim = limits(uid)
         await notify(tr(lang,
-                        f"🚫 <b>Today's limit reached</b> ({lim.get('daily', 0)} posts/day).\n"
-                        "It resets at 12:00 midnight. Need more? /plan",
-                        f"🚫 <b>Aaj ki limit poori</b> ({lim.get('daily', 0)} post/din).\n"
-                        "Raat 12 baje reset hogi. Zyada chahiye? /plan"),
+                        f"🚫 <b>{esc(tname)} — today's limit reached</b> ({lim.get('daily', 0)} posts/day "
+                        "per task).\nIt resets at 12:00 midnight. Need more? /plan",
+                        f"🚫 <b>{esc(tname)} — aaj ki limit poori</b> ({lim.get('daily', 0)} post/din "
+                        "har task).\nRaat 12 baje reset hogi. Zyada chahiye? /plan"),
                      parse_mode=ParseMode.HTML)
         return
 
@@ -942,7 +951,7 @@ async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str
     cp, ce  = remove_footer(raw_plain, raw_entities)
     payload = _msg_payload(msg, cp, ce)
     status, detail = await post_other(context, uid, task, payload, lang)
-    await _report_other(None, notify, status, detail, lang, footer)
+    await _report_other(None, notify, status, detail, lang, footer_plain)
 
 
 async def _report_other(wait_msg, notify, status, detail, lang, footer, tagged=False):
