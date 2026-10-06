@@ -17,7 +17,7 @@ import logging
 from telegram import InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 
-from alerts import notify_admins, who
+from alerts import notify_task_event
 from amazon_api import is_valid_tag
 from caption import FIELD_LABELS, FIELD_ORDER
 from card import WM_POSITIONS, WM_SIZES, WM_COLORS, clean_watermark
@@ -221,6 +221,8 @@ async def set_task_channel(bot, uid: int, tid: int, ident, kind: str, lang: str)
         cfg.update(source_channel=cid, source_title=chat.title or cid, source_username=chat.username or "")
     if not save_task(uid, tid, cfg):
         return False, tr(lang, "❌ Could not save, please try again.", "❌ Save nahi hua, dobara try karein.")
+    await notify_task_event(bot, uid, get_task(tid, uid),
+                            "📢 <b>Destination set hua</b>" if kind == "dest" else "📥 <b>Draft set hua</b>")
     shown = chan(chat.title, chat.username)
     if kind == "dest":
         return True, tr(lang, f"✅ <b>Destination set:</b> {shown}\nDeals will be posted here.",
@@ -730,7 +732,7 @@ async def new_task(query, context, uid: int, lang: str):
         set_default_task(uid, tid)
     if len(list_tasks(uid)) == 1:
         set_default_task(uid, tid)
-    await notify_admins(query.get_bot(), f"📋 <b>Naya task</b>: {esc(cfg['name'])}\n👤 {who(uid)}", uid)
+    await notify_task_event(query.get_bot(), uid, get_task(tid, uid), "📋 <b>Naya task bana</b>")
     # Report — delete nahi hota
     await query.message.reply_text(
         tr(lang, f"✅ <b>{esc(cfg['name'])} created!</b>\nNow set its Destination and Tag below.",
@@ -966,8 +968,8 @@ async def handle_task_callback(query, context, uid: int, data: str) -> bool:
     if act == "del":
         if arg == "ok":
             name = tname(task, lang)
+            await notify_task_event(query.get_bot(), uid, task, "🗑️ <b>Task delete hua</b>")
             delete_task(uid, tid)
-            await notify_admins(query.get_bot(), f"🗑️ <b>Task delete</b>: {esc(name)}\n👤 {who(uid)}", uid)
             await query.message.reply_text(tr(lang, f"🗑️ <b>{esc(name)}</b> deleted.",
                                               f"🗑️ <b>{esc(name)}</b> delete ho gaya."),
                                            parse_mode=ParseMode.HTML)
@@ -1059,7 +1061,7 @@ async def _channel_added_choice(query, context, uid, data, lang):
             return
         if not default_task(uid):
             set_default_task(uid, tid)
-        await notify_admins(query.get_bot(), f"📋 <b>Naya task</b>: {esc(cfg['name'])}\n👤 {who(uid)}", uid)
+        await notify_task_event(query.get_bot(), uid, get_task(tid, uid), "📋 <b>Naya task bana</b>")
     else:
         try:
             tid = int(target)
@@ -1112,8 +1114,12 @@ async def handle_task_input(update: Update, context, uid: int, action: str) -> b
                            "⚠️ Ye tag sahi nahi lag raha.\nAmazon India tag aisa hota hai: <code>mydeals-21</code> "
                            "(aakhir mein <b>-21</b>). Dobara bhejein."))
             return True
+        old_tag = cfg.get("tag") or ""
         cfg["tag"] = text
         done()
+        if old_tag != text:
+            await notify_task_event(context.bot, uid, task, "🏷️ <b>Tag badla</b>"
+                                    + (f" (pehle <code>{esc(old_tag)}</code>)" if old_tag else ""))
         await reply(tr(lang, f"✅ <b>Tag saved:</b> <code>{esc(text)}</code>",
                        f"✅ <b>Tag save ho gaya:</b> <code>{esc(text)}</code>"))
         await reply(task_text(uid, task, lang), task_kb(uid, task, lang))

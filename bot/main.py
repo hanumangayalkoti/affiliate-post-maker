@@ -14,6 +14,7 @@ for _k, _v in list(os.environ.items()):
         del os.environ[_k]
 
 import time
+import asyncio
 import logging
 import datetime as dt
 import html as html_lib
@@ -38,11 +39,12 @@ import faq
 import gate
 import task_ui
 from alerts import notify_admins, who
-from database import cache_cleanup, post_log_cleanup, cleanup_old_entries, user_stats
+from database import (
+    cache_cleanup, post_log_cleanup, cleanup_old_entries, user_stats, posts_today, day_report_rows,
+)
 from engine import (
     process_and_post, is_own_message, extract_urls, hidden_link_urls, get_amazon_urls_deep,
     remember_own, dm_user, chat_matches, fmt_date, day_start_naive, SELF_MARKER,
-    posts_left_today,
 )
 from storage import (
     init_db, list_tasks, create_task, new_task_config, find_tasks_by_source, find_tasks_by_dest,
@@ -84,8 +86,11 @@ def home_text(uid: int, first_name: str) -> str:
     else:
         plan = tr(lang, "❌ No active plan", "❌ Koi plan chalu nahi")
 
-    left = posts_left_today(uid)
-    used = "∞" if left is None else f"{max(0, lim['daily'] - left)}/{lim['daily']}"
+    today = posts_today(uid)
+    if is_admin(uid):
+        used = f"{today} (∞)"
+    else:
+        used = tr(lang, f"{today} (limit {lim['daily']} per task)", f"{today} (limit {lim['daily']} har task)")
 
     lines = [
         tr(lang, f"👋 <b>Hello {esc(first_name or 'friend')}!</b>", f"👋 <b>Namaste {esc(first_name or 'dost')}!</b>"),
@@ -175,7 +180,8 @@ def stats_text(uid: int) -> str:
     lim = limits(uid)
     daily = lim["daily"] if lim.get("key") != "admin" else "∞"
     lines = [tr(lang, "📊 <b>Your Posts</b>\n", "📊 <b>Aapki Posts</b>\n"),
-             tr(lang, f"📅 Today: <b>{st['today']}</b> / {daily}", f"📅 Aaj: <b>{st['today']}</b> / {daily}"),
+             tr(lang, f"📅 Today: <b>{st['today']}</b>  (limit {daily} per task)",
+                f"📅 Aaj: <b>{st['today']}</b>  (limit {daily} har task)"),
              tr(lang, f"🗓️ 7 days: <b>{st['week']}</b>", f"🗓️ 7 din: <b>{st['week']}</b>"),
              tr(lang, f"📆 30 days: <b>{st['month']}</b>  (Amazon {st['amazon_month']}, other {st['other_month']})",
                 f"📆 30 din: <b>{st['month']}</b>  (Amazon {st['amazon_month']}, baaki {st['other_month']})"),
@@ -184,7 +190,7 @@ def stats_text(uid: int) -> str:
     if tasks:
         lines.append(tr(lang, "\n<b>Today by task:</b>", "\n<b>Aaj — task ke hisaab se:</b>"))
         for t in tasks:
-            lines.append(f"• {esc(task_ui.tname(t, lang))}: {st['by_task'].get(t['id'], 0)}")
+            lines.append(f"• {esc(task_ui.tname(t, lang))}: {st['by_task'].get(t['id'], 0)} / {daily}")
     lines.append(tr(lang, "\n<i>The daily count resets at 12:00 midnight. Clicks & earnings are in your "
                           "Amazon Associates dashboard.</i>",
                     "\n<i>Roz ki ginti raat 12 baje reset hoti hai. Clicks aur kamai Amazon Associates "
@@ -225,10 +231,10 @@ async def after_gate(bot, uid: int):
             await dm_user(bot, uid,
                           tr(lang, f"🎁 <b>Your {TRIAL_DAYS}-day Pro trial has started — free!</b>\n"
                                    f"📅 Valid till {fmt_date(exp)}\n📋 {pro['tasks']} tasks • "
-                                   f"📤 {pro['daily']} posts/day • 🎨 Image Card",
+                                   f"📤 {pro['daily']} posts/day per task • 🎨 Image Card",
                              f"🎁 <b>Aapka {TRIAL_DAYS} din ka Pro trial shuru — bilkul free!</b>\n"
                              f"📅 {fmt_date(exp)} tak\n📋 {pro['tasks']} task • "
-                             f"📤 {pro['daily']} post/din • 🎨 Image Card"),
+                             f"📤 {pro['daily']} post/din har task • 🎨 Image Card"),
                           parse_mode=ParseMode.HTML)
             await notify_admins(bot, f"🎁 <b>Trial shuru</b>: {who(uid)}", uid)
             # Pehli baar hi Task 1 banta hai — user ne baad mein delete kiya to wapas nahi
@@ -340,7 +346,7 @@ async def cmd_language(update, context, uid):
 
 
 async def cmd_cancel(update, context, uid):
-    for k in ("action", "tid", "bkey", "hf_kind", "adm_target", "bc_src"):
+    for k in ("action", "tid", "bkey", "hf_kind", "adm_target", "adm_sign", "adm_back", "bc_src"):
         context.user_data.pop(k, None)
     await _send(update, context, tr(get_lang(uid), "❌ Cancelled.", "❌ Band kar diya."),
                 InlineKeyboardMarkup([HOME_ROW]))
@@ -618,6 +624,45 @@ async def midnight_job(context: ContextTypes.DEFAULT_TYPE):
                             "\n".join("• " + who(u) for u in expired[:30]))
 
 
+async def daily_report_job(context: ContextTypes.DEFAULT_TYPE):
+    """Raat 12 baje ke baad: har user ko pichle din ki report — kis task se kitni post."""
+    end = day_start_naive()
+    start = end - dt.timedelta(days=1)
+    day_label = fmt_date(start).split(",")[0]
+    rows = day_report_rows(start, end)
+    sent = 0
+    for uid, by_task in rows.items():
+        lang = get_lang(uid)
+        tasks = {t["id"]: t for t in list_tasks(uid)}
+        total = sum(a + o for a, o in by_task.values())
+        lines = [tr(lang, f"📊 <b>Daily Report — {day_label}</b>\n",
+                    f"📊 <b>Din ki Report — {day_label}</b>\n"),
+                 tr(lang, f"📤 Total posts: <b>{total}</b>", f"📤 Kul post: <b>{total}</b>")]
+        lim = limits(uid)
+        cap = "∞" if is_admin(uid) else lim.get("daily", 0)
+        order = list(tasks) + [tid for tid in by_task if tid not in tasks]
+        for tid in order:
+            amz, other = by_task.get(tid, (0, 0))
+            t = tasks.get(tid)
+            if t:
+                c = t["cfg"]
+                name = esc(task_ui.tname(t, lang))
+                dest = chan(c.get("channel_title"), c.get("channel_username"), esc(str(c.get("channel") or "—")))
+                head = f"\n📋 <b>{name}</b> → 📢 {dest}"
+            else:
+                head = tr(lang, "\n📋 <b>Deleted task</b>", "\n📋 <b>Delete hua task</b>")
+            lines.append(head)
+            lines.append(tr(lang, f"     {amz + other} / {cap}  (🛍️ Amazon {amz}, 📝 other {other})",
+                            f"     {amz + other} / {cap}  (🛍️ Amazon {amz}, 📝 baaki {other})"))
+        lines.append(tr(lang, "\n<i>New day, new limit — happy posting! 🚀</i>",
+                        "\n<i>Naya din, nayi limit — posting jaari rakhein! 🚀</i>"))
+        if await dm_user(context.bot, uid, "\n".join(lines), parse_mode=ParseMode.HTML,
+                         disable_web_page_preview=True):
+            sent += 1
+        await asyncio.sleep(0.05)
+    logger.info(f"Daily report: {sent}/{len(rows)} users ko bheji")
+
+
 async def on_error(update, context: ContextTypes.DEFAULT_TYPE):
     """Koi bhi anjaan gadbad — Railway logs mein poori detail."""
     logger.error("Handler error", exc_info=context.error)
@@ -710,6 +755,7 @@ def main():
     jq = app.job_queue
     if jq:
         jq.run_daily(midnight_job, time=dt.time(0, 0, 30, tzinfo=LOCAL_TZ), name="midnight")
+        jq.run_daily(daily_report_job, time=dt.time(0, 2, 0, tzinfo=LOCAL_TZ), name="daily_report")
         jq.run_repeating(cleanup_job, interval=6 * 3600, first=300, name="cleanup")
     else:
         logger.error("JobQueue nahi mili! requirements.txt mein python-telegram-bot[job-queue] chahiye.")

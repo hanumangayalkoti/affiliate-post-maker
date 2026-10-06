@@ -5,7 +5,7 @@ jodo/kaato, tier badlo, block, message), payments, broadcast, stats.
 
 Callback:  adm:home | adm:u:<seg>:<page> | adm:v:<uid>:<seg>:<page>
            adm:d:<uid>:<days>:<seg>:<page> | adm:t:<uid>:<tier>:<seg>:<page>
-           adm:e / adm:b / adm:m / adm:k :<uid>:<seg>:<page>
+           adm:e / adm:b / adm:m / adm:k / adm:tk / adm:ga / adm:rd :<uid>:<seg>:<page>
            adm:p | adm:bc | adm:bcgo:<seg> | adm:s
 """
 import asyncio
@@ -153,7 +153,7 @@ def user_card(uid: int, seg: str = "all", page: int = 0):
     if u.get("bot_blocked"):
         lines.append("🚫 Bot ko block kiya hua hai")
     daily = "∞" if lim.get("key") == "admin" else lim["daily"]
-    lines.append(f"\n📤 Posts: aaj {st['today']} / {daily} | 7 din {st['week']} | total {st['total']}")
+    lines.append(f"\n📤 Posts: aaj {st['today']} (limit {daily}/task) | 7 din {st['week']} | total {st['total']}")
     lines.append(f"\n📋 <b>Tasks ({len(tasks)})</b>")
     for t in tasks[:6]:
         c = t["cfg"]
@@ -171,9 +171,15 @@ def user_card(uid: int, seg: str = "all", page: int = 0):
 
     b = f"{uid}:{seg}:{page}"
     rows = [
-        [btn("+7 din", callback_data=f"adm:d:{uid}:7:{seg}:{page}"),
-         btn("+30 din", callback_data=f"adm:d:{uid}:30:{seg}:{page}"),
-         btn("−7 din", callback_data=f"adm:d:{uid}:-7:{seg}:{page}")],
+        [btn("📋 Tasks dekho", BLUE, callback_data=f"adm:tk:{b}")],
+        [btn("+1 din", GREEN, callback_data=f"adm:d:{uid}:1:{seg}:{page}"),
+         btn("+7 din", GREEN, callback_data=f"adm:d:{uid}:7:{seg}:{page}"),
+         btn("+30 din", GREEN, callback_data=f"adm:d:{uid}:30:{seg}:{page}")],
+        [btn("−1 din", RED, callback_data=f"adm:d:{uid}:-1:{seg}:{page}"),
+         btn("−7 din", RED, callback_data=f"adm:d:{uid}:-7:{seg}:{page}"),
+         btn("−30 din", RED, callback_data=f"adm:d:{uid}:-30:{seg}:{page}")],
+        [btn("➕ Din jodo (likh ke)", callback_data=f"adm:ga:{b}"),
+         btn("➖ Din kaato (likh ke)", callback_data=f"adm:rd:{b}")],
         [btn(("✔️ " if (u.get("tier") == k and is_active(uid, u) and not u.get("is_trial")) else "")
              + tier_label(k), callback_data=f"adm:t:{uid}:{k}:{seg}:{page}") for k in TIER_ORDER],
         [btn("⏹️ Plan khatam", RED, callback_data=f"adm:e:{b}"),
@@ -185,6 +191,45 @@ def user_card(uid: int, seg: str = "all", page: int = 0):
          btn("👑 Panel", callback_data="adm:home")],
     ]
     return "\n".join(lines), InlineKeyboardMarkup(rows)
+
+
+async def user_tasks_screen(bot, uid: int, seg: str = "all", page: int = 0):
+    """Admin — user ke saare tasks poori detail ke saath (Draft / Destination link bhi)."""
+    from alerts import _channel_link
+    u = get_user(uid) or {"user_id": uid}
+    tasks = list_tasks(uid)
+    st = user_stats(uid, day_start_naive())
+    lim = limits(uid)
+    cap = "∞" if lim.get("key") == "admin" else lim.get("daily", 0)
+    lines = [f"📋 <b>{_who(u)} ke Tasks</b> ({len(tasks)}/{lim.get('tasks', 0)})  🆔 <code>{uid}</code>"]
+    if not tasks:
+        lines.append("\nAbhi koi task nahi bana.")
+    for t in tasks[:10]:
+        c = t["cfg"]
+        kinds = []
+        if c.get("allow_amazon", True):
+            kinds.append("🛍️ Amazon")
+        if c.get("allow_other", True):
+            kinds.append("📝 Non-Amazon")
+        lines += [
+            f"\n{'⏸️' if t['paused'] else '▶️'} <b>{esc(c.get('name') or '#' + str(t['id']))}</b> (#{t['id']})",
+            f"🏷️ Tag: <code>{esc(c.get('tag') or '—')}</code>",
+            f"📥 Draft: {await _channel_link(bot, uid, t, 'src')}",
+            f"📢 Destination: {await _channel_link(bot, uid, t, 'dest')}",
+            f"📤 Aaj: {st['by_task'].get(t['id'], 0)} / {cap}   •   {' + '.join(kinds) or '—'}",
+            f"♻️ Duplicate: {'ON' if c.get('dup_check', True) else 'OFF'}   •   "
+            f"🗓️ Bana: {fmt_date(t.get('created_at'))}",
+        ]
+    if len(tasks) > 10:
+        lines.append(f"\n… aur {len(tasks) - 10} task")
+    text = "\n".join(lines)
+    if len(text) > 4000:
+        text = text[:3990] + "…"
+    kb = InlineKeyboardMarkup([
+        [btn("🔄 Refresh", callback_data=f"adm:tk:{uid}:{seg}:{page}"),
+         btn("⬅️ User", callback_data=f"adm:v:{uid}:{seg}:{page}")],
+    ])
+    return text, kb
 
 
 def payments_text() -> str:
@@ -347,13 +392,28 @@ async def handle_admin_callback(query, context, uid: int, data: str) -> bool:
     page = int(p[-1]) if len(p) >= 5 and p[-1].isdigit() else 0
     note = ""
 
+    if act == "tk":
+        text, kb = await user_tasks_screen(context.bot, target, seg, page)
+        await show(query, context, text, kb)
+        return True
+    if act in ("ga", "rd"):
+        context.user_data.update(action="adm_days", adm_target=target, adm_sign=1 if act == "ga" else -1,
+                                 adm_back=f"{seg}:{page}")
+        ask = ("➕ Kitne din <b>jodne</b> hain? Number bhejein (jaise <code>15</code>).\n"
+               "<i>User ko message jayega.</i>" if act == "ga" else
+               "➖ Kitne din <b>kaatne</b> hain? Number bhejein (jaise <code>5</code>).\n"
+               "<i>User ko koi message nahi jayega.</i>")
+        await show(query, context, ask,
+                   InlineKeyboardMarkup([[btn("⬅️ Wapas", callback_data=f"adm:v:{target}:{seg}:{page}")]]))
+        return True
     if act == "d" and len(p) >= 4:
         try:
             days = float(p[3])
         except ValueError:
             return True
         new_exp = await _change_days(context.bot, target, days)
-        note = f"✅ {days:+g} din — expiry {fmt_date(new_exp)}\n\n"
+        note = (f"✅ {days:+g} din — expiry {fmt_date(new_exp)}"
+                + ("  (user ko bata diya)" if days > 0 else "  (user ko message nahi gaya)") + "\n\n")
     elif act == "t" and len(p) >= 4 and p[3] in TIERS:
         if set_tier(target, p[3]):
             from task_ui import enforce_task_limit
@@ -394,6 +454,33 @@ async def handle_admin_input(update: Update, context, uid: int, action: str) -> 
         u = find_user(text)
         out, kb = user_card(u["user_id"]) if u else ("❌ User nahi mila. (User ne /start kiya hona chahiye.)", None)
         m = await msg.reply_text(out, parse_mode=ParseMode.HTML, reply_markup=kb, disable_web_page_preview=True)
+        track(context, m)
+        return True
+
+    if action == "adm_days":
+        try:
+            days = abs(float(text.replace("+", "").replace("-", "").strip()))
+        except ValueError:
+            m = await msg.reply_text("⚠️ Sirf number bhejein, jaise 15. (/cancel se band)")
+            track(context, m)
+            return True
+        if days <= 0 or days > 3650:
+            m = await msg.reply_text("⚠️ 1 se 3650 ke beech number bhejein.")
+            track(context, m)
+            return True
+        target = context.user_data.pop("adm_target", None)
+        sign = context.user_data.pop("adm_sign", 1)
+        seg, _, page = (context.user_data.pop("adm_back", "all:0")).partition(":")
+        context.user_data.pop("action", None)
+        if target is None:
+            return True
+        # _change_days sirf din JODNE pe user ko batata hai, kaatne pe nahi
+        new_exp = await _change_days(context.bot, target, sign * days)
+        note = (f"✅ {sign * days:+g} din — expiry {fmt_date(new_exp)}"
+                + ("  (user ko bata diya)" if sign > 0 else "  (user ko message nahi gaya)") + "\n\n")
+        out, kb = user_card(target, seg or "all", int(page) if page.isdigit() else 0)
+        m = await msg.reply_text(note + out, parse_mode=ParseMode.HTML, reply_markup=kb,
+                                 disable_web_page_preview=True)
         track(context, m)
         return True
 

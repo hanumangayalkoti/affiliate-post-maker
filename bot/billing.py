@@ -92,8 +92,8 @@ def plan_text(uid: int) -> str:
         t = TIERS[k]
         card = tr(lang, "✅ Image Card", "✅ Image Card") if t["card"] else tr(lang, "❌ Image Card", "❌ Image Card")
         lines.append(f"{t['emoji']} <b>{t['name']}</b> — ₹{t['inr']} / {PLAN_DAYS} {tr(lang, 'days', 'din')}")
-        lines.append(tr(lang, f"     📋 {t['tasks']} task  •  📤 {t['daily']} posts/day  •  {card}",
-                        f"     📋 {t['tasks']} task  •  📤 {t['daily']} post/din  •  {card}"))
+        lines.append(tr(lang, f"     📋 {t['tasks']} task  •  📤 {t['daily']} posts/day per task  •  {card}",
+                        f"     📋 {t['tasks']} task  •  📤 {t['daily']} post/din har task  •  {card}"))
     lines.append(tr(lang,
                     "\n<i>All plans include every other feature. Changing plan? The value of your "
                     "remaining days is added to the new plan — nothing is lost.</i>",
@@ -120,8 +120,8 @@ def tier_text(uid: int, tier: str) -> str:
     u = get_user(uid) or {}
     exp = new_expiry(utcnow(), u.get("expires_at"), u.get("tier"), bool(u.get("is_trial")), tier)
     lines = [f"{t['emoji']} <b>{t['name']}</b> — ₹{t['inr']} / {PLAN_DAYS} {tr(lang, 'days', 'din')}\n",
-             tr(lang, f"📋 {t['tasks']} task(s)\n📤 {t['daily']} posts per day\n",
-                f"📋 {t['tasks']} task\n📤 {t['daily']} post roz\n")
+             tr(lang, f"📋 {t['tasks']} task(s)\n📤 {t['daily']} posts per day per task\n",
+                f"📋 {t['tasks']} task\n📤 {t['daily']} post roz har task\n")
              + ("🎨 Image Card ✅" if t["card"] else "🎨 Image Card ❌"),
              tr(lang, f"\n📅 After buying, your plan runs till <b>{fmt_date(exp)}</b>",
                 f"\n📅 Khareedne ke baad plan <b>{fmt_date(exp)}</b> tak chalega")]
@@ -242,9 +242,9 @@ async def after_paid(application, uid: int, tier: str, new_exp, how: str, amount
     t = TIERS[tier]
     text = tr(lang,
               f"🎉 <b>Payment received — thank you!</b>\n\n✅ Plan: <b>{t['emoji']} {t['name']}</b>\n"
-              f"📅 Valid till: <b>{fmt_date(new_exp)}</b>\n📋 {t['tasks']} task(s) • 📤 {t['daily']} posts/day",
+              f"📅 Valid till: <b>{fmt_date(new_exp)}</b>\n📋 {t['tasks']} task(s) • 📤 {t['daily']} posts/day per task",
               f"🎉 <b>Payment mil gaya — shukriya!</b>\n\n✅ Plan: <b>{t['emoji']} {t['name']}</b>\n"
-              f"📅 Chalega: <b>{fmt_date(new_exp)}</b> tak\n📋 {t['tasks']} task • 📤 {t['daily']} post/din")
+              f"📅 Chalega: <b>{fmt_date(new_exp)}</b> tak\n📋 {t['tasks']} task • 📤 {t['daily']} post/din har task")
     if paused:
         text += tr(lang, f"\n\n⏸️ {len(paused)} extra task(s) were paused (your plan allows {t['tasks']}). "
                          "Choose which to run in /tasks.",
@@ -326,7 +326,7 @@ async def send_stars_invoice(bot, uid: int, tier: str):
     await bot.send_invoice(
         chat_id=uid,
         title=f"{BOT_NAME} — {t['name']}",
-        description=f"{t['name']} plan — {PLAN_DAYS} days. {t['tasks']} task(s), {t['daily']} posts/day.",
+        description=f"{t['name']} plan — {PLAN_DAYS} days. {t['tasks']} task(s), {t['daily']} posts/day per task.",
         payload=f"plan:{tier}:{PLAN_DAYS}:{uid}:{int(time.time())}",
         provider_token="",
         currency="XTR",

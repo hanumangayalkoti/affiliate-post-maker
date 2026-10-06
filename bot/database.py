@@ -186,14 +186,19 @@ def log_post(user_id: int, task_id: int, kind: str, asin: str = "", title: str =
         logger.error(f"Log post error: {e}")
 
 
-def posts_today(user_id: int) -> int:
-    """Aaj (raat 12 baje IST se) kitni post — daily limit isi se."""
+def posts_today(user_id: int, task_id: int = None) -> int:
+    """Aaj (raat 12 baje IST se) kitni post. task_id diya to sirf us task ki —
+    daily limit har task ki alag hai."""
     try:
         start = local_day_start_utc()
         with get_db() as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT COUNT(*) FROM post_log WHERE user_id = %s AND posted_at >= %s",
-                            (user_id, start))
+                if task_id is None:
+                    cur.execute("SELECT COUNT(*) FROM post_log WHERE user_id = %s AND posted_at >= %s",
+                                (user_id, start))
+                else:
+                    cur.execute("SELECT COUNT(*) FROM post_log WHERE user_id = %s AND task_id = %s "
+                                "AND posted_at >= %s", (user_id, task_id, start))
                 return cur.fetchone()[0]
     except Exception as e:
         logger.error(f"posts_today error: {e}")
@@ -230,6 +235,29 @@ def user_stats(user_id: int, day_start: datetime) -> dict:
                 out["by_task"] = {tid: n for tid, n in cur.fetchall()}
     except Exception as e:
         logger.error(f"user_stats error: {e}")
+    return out
+
+
+def day_report_rows(start: datetime, end: datetime) -> dict:
+    """Ek din ki posts: {user_id: {task_id: (amazon, other)}} — din ke end wali report ke liye."""
+    out: dict = {}
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT user_id, task_id,
+                           COUNT(*) FILTER (WHERE kind = 'amazon'),
+                           COUNT(*) FILTER (WHERE kind <> 'amazon')
+                    FROM post_log WHERE posted_at >= %s AND posted_at < %s
+                    GROUP BY user_id, task_id
+                    """,
+                    (start, end),
+                )
+                for uid, tid, amz, other in cur.fetchall():
+                    out.setdefault(uid, {})[tid] = (amz, other)
+    except Exception as e:
+        logger.error(f"day_report_rows error: {e}")
     return out
 
 

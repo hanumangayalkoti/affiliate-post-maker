@@ -4,9 +4,11 @@ plan khatam...). Ye messages kabhi delete nahi hote.
 """
 import html as html_lib
 import logging
+from datetime import datetime, timezone
 
 from telegram.constants import ParseMode
 
+from storage import to_local, save_task
 from users import ADMIN_IDS, get_user, is_admin
 
 logger = logging.getLogger(__name__)
@@ -30,3 +32,50 @@ async def notify_admins(bot, text: str, about_uid: int = None):
                                    disable_web_page_preview=True)
         except Exception as e:
             logger.error(f"Admin notify fail ({aid}): {e}")
+
+
+async def _channel_link(bot, uid: int, task: dict, kind: str) -> str:
+    """Draft / Destination ka link admin ke liye. Public = t.me/username.
+    Private = bot ka banaya invite link (ek baar bana ke task mein yaad rakhte hain)."""
+    c = task["cfg"]
+    if kind == "dest":
+        cid, title, uname, key = c.get("channel"), c.get("channel_title"), c.get("channel_username"), "dest_invite"
+    else:
+        cid, title, uname, key = (c.get("source_channel"), c.get("source_title"),
+                                  c.get("source_username"), "source_invite")
+    if not cid:
+        return "— (set nahi)"
+    name = esc(title or str(cid))
+    uname = (uname or "").lstrip("@").strip()
+    if uname:
+        return f'<a href="https://t.me/{esc(uname)}">{name}</a> (@{esc(uname)})'
+    link = c.get(key) if c.get(key + "_for") == str(cid) else ""
+    if not link:
+        try:
+            inv = await bot.create_chat_invite_link(chat_id=int(cid), name="Admin view")
+            link = inv.invite_link
+            c[key], c[key + "_for"] = link, str(cid)
+            save_task(uid, task["id"], c)
+        except Exception as e:
+            logger.info(f"Invite link nahi bana ({cid}): {e}")
+            link = ""
+    if link:
+        return f'<a href="{esc(link)}">{name}</a> (private)'
+    return f"{name} (private, <code>{esc(str(cid))}</code>)"
+
+
+async def notify_task_event(bot, uid: int, task: dict, event: str):
+    """Admin ko task ki poori khabar — kab, kisne, kaunsa task, tag, Draft aur Destination link."""
+    if is_admin(uid) or not task:
+        return
+    c = task["cfg"]
+    when = to_local(datetime.now(timezone.utc)).strftime("%d %b %Y, %I:%M %p IST")
+    text = (f"{event}\n"
+            f"🕒 {when}\n"
+            f"👤 {who(uid)}\n"
+            f"📋 Task: <b>{esc(c.get('name') or '#' + str(task['id']))}</b> (#{task['id']})"
+            f"{'  ⏸️ paused' if task.get('paused') else ''}\n"
+            f"🏷️ Tag: <code>{esc(c.get('tag') or '—')}</code>\n"
+            f"📥 Draft: {await _channel_link(bot, uid, task, 'src')}\n"
+            f"📢 Destination: {await _channel_link(bot, uid, task, 'dest')}")
+    await notify_admins(bot, text, uid)
