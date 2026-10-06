@@ -248,6 +248,17 @@ def make_affiliate_url(asin: str, tag: str) -> str:
     return f"{base}?tag={tag}" if tag else base
 
 
+def display_link(url: str) -> str:
+    """Post mein DIKHNE wala chhota asli Amazon link: amazon.in/dp/B0XXXXXXXX.
+    Tag wala poora link iske peeche (href mein) rehta hai. Asli amazon.in domain
+    dikhne se log bharosa karte hain aur phone seedha Amazon app kholta hai."""
+    asin = extract_asin(url or "")
+    if not asin:
+        return ""
+    host = MARKETPLACE[4:] if MARKETPLACE.startswith("www.") else MARKETPLACE
+    return f"{host}/dp/{asin}"
+
+
 def make_cart_url(asin: str, tag: str) -> str:
     """
     Add-to-Cart link. Cart mein daalne se attribution window

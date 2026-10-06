@@ -5,6 +5,8 @@ aur caption Telegram ki limit ke andar rehta hai.
 import re
 import html as html_lib
 
+from amazon_api import display_link
+
 _TAG_RE = re.compile(r"<[^>]+>")
 
 # Telegram limits
@@ -187,7 +189,8 @@ def build_amazon_caption(product: dict, short_link: str, cfg: dict,
 
     link_line = ""
     if show_link and short_link:
-        link_line = f'🔗 <b><a href="{_esc(short_link)}">{_esc(short_link)}</a></b>'
+        shown = display_link(short_link) or short_link
+        link_line = f'🛒 <b><a href="{_esc(short_link)}">{_esc(shown)}</a></b>'
 
     # Header / footer / link ki jagah pehle se reserve
     reserved = 0
