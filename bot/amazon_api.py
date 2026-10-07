@@ -706,11 +706,42 @@ async def _throttle():
     _last_call_at = time.monotonic()
 
 
-async def _call_get_items(asins: list) -> dict:
-    """Ek call, max 10 ASIN. Returns {asin: parsed_product} (bina links ke)."""
+# Har ASIN ka data kyun nahi mila — Draft reply mein user ko wajah dikhane ke liye.
+# Values: busy, server, auth, network, not_accessible, invalid, empty
+_fetch_errors: "OrderedDict[str, str]" = OrderedDict()
+_RETRY_STATUSES = {429, 500, 502, 503, 504}
+RETRY_WAIT_SECONDS = 2.5
+
+
+def _note_error(asins, reason: str) -> None:
+    for a in asins:
+        _fetch_errors[a] = reason
+        _fetch_errors.move_to_end(a)
+    while len(_fetch_errors) > 500:
+        _fetch_errors.popitem(last=False)
+
+
+def fetch_error(asin: str) -> str:
+    """Is ASIN ka data last time kyun nahi mila ('' = pata nahi)."""
+    return _fetch_errors.get((asin or "").upper(), "")
+
+
+def _error_reason(code: str) -> str:
+    c = (code or "").lower()
+    if "throttl" in c or "toomanyrequests" in c or "limit" in c:
+        return "busy"
+    if "notaccessible" in c:
+        return "not_accessible"
+    if "invalid" in c or "notfound" in c:
+        return "invalid"
+    return "invalid"
+
+
+async def _get_items_once(asins: list):
+    """Ek HTTP call. Returns (data | None, reason, retry_allowed)."""
     token = await _get_token()
     if not token:
-        return {}
+        return None, "auth", False
     await _throttle()
     _api_stats["calls"] += 1
 
@@ -732,18 +763,34 @@ async def _call_get_items(asins: list) -> dict:
                 },
                 timeout=aiohttp.ClientTimeout(total=25),
             ) as resp:
-                if resp.status == 403:
+                if resp.status in (401, 403):
                     _token_cache["token"]      = None
                     _token_cache["expires_at"] = None
-                    logger.error("Amazon API 403 — token invalidated")
-                    return {}
+                    body = await resp.text()
+                    logger.error(f"Amazon API {resp.status} — token invalidated: {body[:200]}")
+                    return None, "auth", True        # naye token se ek baar aur
                 if resp.status not in (200, 206):
                     body = await resp.text()
                     logger.error(f"GetItems {resp.status}: {body[:300]}")
-                    return {}
-                data = await resp.json()
+                    reason = "busy" if resp.status == 429 else "server"
+                    return None, reason, resp.status in _RETRY_STATUSES
+                return await resp.json(), "", False
     except Exception as e:
-        logger.error(f"GetItems call fail: {e}")
+        logger.error(f"GetItems call fail: {type(e).__name__}: {e}")
+        return None, "network", True
+
+
+async def _call_get_items(asins: list) -> dict:
+    """Ek call, max 10 ASIN (busy/network pe ek retry). Returns {asin: parsed_product}."""
+    data, reason = None, ""
+    for attempt in range(2):
+        data, reason, retry = await _get_items_once(asins)
+        if data is not None or not retry or attempt:
+            break
+        logger.info(f"GetItems retry ({reason}) in {RETRY_WAIT_SECONDS}s")
+        await asyncio.sleep(RETRY_WAIT_SECONDS)
+    if data is None:
+        _note_error(asins, reason)
         return {}
 
     # Docs do naam dikhate hain — dono accept karo, warna chup-chaap fail hoga
@@ -761,9 +808,17 @@ async def _call_get_items(asins: list) -> dict:
         parsed.pop("detail_url", None)
         out[asin] = parsed
 
+    wanted = [a.upper() for a in asins]
+    for a in wanted:
+        _fetch_errors.pop(a, None)          # purani wajah hatao, is call ki likho
     for err in (data.get("errors") or []):
-        logger.warning(f"GetItems error: {err.get('code')} — {err.get('message', '')[:120]}")
-
+        code, msg = err.get("code") or "", err.get("message") or ""
+        logger.warning(f"GetItems error: {code} — {msg[:160]}")
+        hit = [a for a in wanted if a in msg.upper() and a not in out]
+        _note_error(hit or [a for a in wanted if a not in out], _error_reason(code))
+    for a in wanted:
+        if a not in out and a not in _fetch_errors:
+            _note_error([a], "empty")
     return out
 
 
