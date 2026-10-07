@@ -534,12 +534,22 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
     msg = update.channel_post
     if not msg or is_own_message(msg, context.bot.id):
         return
-    tasks = find_tasks_by_source(msg.chat.id, msg.chat.username or "")
-    if not tasks:
-        return
-    owner = tasks[0]["user_id"]              # ek Draft = ek owner
-    tasks = [t for t in tasks
-             if t["user_id"] == owner and chat_matches(msg.chat, t["cfg"].get("source_channel"))]
+    found = [t for t in find_tasks_by_source(msg.chat.id, msg.chat.username or "")
+             if chat_matches(msg.chat, t["cfg"].get("source_channel"))]
+    # Ek Draft kai accounts ka ho sakta hai (channel ke alag-alag admin — jaise ek
+    # Amazon wale Destination ke liye, doosra Non-Amazon ke liye). Har account ke
+    # tasks uske apne plan, tag aur settings se chalte hain.
+    owners = list(dict.fromkeys(t["user_id"] for t in found))
+    for owner in owners:
+        tasks = [t for t in found if t["user_id"] == owner]
+        try:
+            await _draft_post_for_owner(context, msg, owner, tasks)
+        except Exception as e:
+            logger.error(f"Draft post fail (owner {owner}): {e}", exc_info=True)
+
+
+async def _draft_post_for_owner(context, msg, owner: int, tasks: list):
+    """Draft ki ek post — ek account ke saare chalte tasks pe."""
     if not tasks or is_blocked(owner):
         return
     lang = get_lang(owner)

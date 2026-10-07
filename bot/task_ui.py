@@ -23,7 +23,7 @@ from caption import FIELD_LABELS, FIELD_ORDER
 from card import WM_POSITIONS, WM_SIZES, WM_COLORS, clean_watermark
 from storage import (
     list_tasks, get_task, create_task, save_task, set_task_paused, delete_task,
-    new_task_config, find_tasks_by_source,
+    new_task_config,
 )
 from ui import btn, tr, chan, style_name, next_style, track, GREEN, BLUE, RED
 from users import get_user, get_lang, limits, set_default_task, is_active
@@ -215,9 +215,8 @@ async def set_task_channel(bot, uid: int, tid: int, ident, kind: str, lang: str)
         if _same(cid, cfg.get("channel")):
             return False, tr(lang, "⚠️ This is the Destination of this task. Draft must be a different channel.",
                              "⚠️ Ye isi task ka Destination hai. Draft alag channel hona chahiye.")
-        if any(t["user_id"] != uid for t in find_tasks_by_source(chat.id)):
-            return False, tr(lang, "⚠️ This channel is already someone else's Draft.",
-                             "⚠️ Ye channel pehle se kisi aur ka Draft hai.")
+        # Doosre account ka bhi Draft ho sakta hai — dono us channel ke admin hain
+        # (verify_channel ne check kiya), aur har account ke tasks alag chalte hain.
         cfg.update(source_channel=cid, source_title=chat.title or cid, source_username=chat.username or "")
     if not save_task(uid, tid, cfg):
         return False, tr(lang, "❌ Could not save, please try again.", "❌ Save nahi hua, dobara try karein.")
