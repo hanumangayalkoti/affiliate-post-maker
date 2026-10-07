@@ -372,28 +372,44 @@ def _delete_spans(text: str, entities: list, spans: list):
     return "".join(parts), new_ents
 
 
-def strip_promo(text: str, entities: list):
+def strip_promo(text: str, entities: list, keep: tuple = ()):
     """
     Doosre channel ka promo hatao: Telegram link wali poori line (dikhne wala
     t.me link ho ya kisi text ke peeche chhupa), aur har @username.
     Baaki caption ("Loot Free", "Apply Coupon"...) jaisa tha waisa rehta hai.
+    keep — apne channel ke usernames (bina @), jo kabhi nahi hatte.
     """
+    keep = {k.lstrip("@").lower() for k in keep if k}
+
+    def foreign(m) -> bool:
+        return m.group(0)[1:].lower() not in keep
+
+    def own_tg(line_or_url: str) -> bool:
+        m = _TG_LINK_RE.search(line_or_url or "")
+        if not m:
+            return False
+        path = re.sub(r"^(?:https?://)?(?:www\.)?(?:t|telegram)\.(?:me|dog)/", "", m.group(0), flags=re.I)
+        return path.split("/")[0].split("?")[0].lower() in keep
     if not text:
         return text, list(entities or [])
     entities = list(entities or [])
     tg_ranges = [(e.offset, e.offset + e.length) for e in entities
-                 if str(getattr(e.type, "value", e.type)) == "text_link" and _TG_LINK_RE.search(e.url or "")]
+                 if str(getattr(e.type, "value", e.type)) == "text_link" and _TG_LINK_RE.search(e.url or "")
+                 and not own_tg(e.url)]
     spans, pos = [], 0
     for line in text.split("\n"):
         start, end = pos, pos + len(line)
         s16 = _py_to_utf16_len(text[:start])
         e16 = s16 + _py_to_utf16_len(line)
-        promo_mention = _MENTION_RE.search(line) and _PROMO_WORDS_RE.search(line)
-        if (_TG_LINK_RE.search(line) or promo_mention
+        promo_mention = any(foreign(m) for m in _MENTION_RE.finditer(line)) and _PROMO_WORDS_RE.search(line)
+        tg_line = _TG_LINK_RE.search(line) and not own_tg(line)
+        if (tg_line or promo_mention
                 or any(a < e16 and b > s16 for a, b in tg_ranges)):
             spans.append((start, end + 1))          # newline samet poori line
         pos = end + 1
     for m in _MENTION_RE.finditer(text):
+        if not foreign(m):
+            continue
         s = m.start() - 1 if m.start() > 0 and text[m.start() - 1] == " " else m.start()
         spans.append((s, m.end()))
     text, entities = _delete_spans(text, entities, spans)
@@ -672,6 +688,11 @@ async def post_amazon_product(context, uid: int, task: dict, product: dict, lang
         return "error", _friendly_error(e, lang), ""
 
 
+def _own_handles(cfg: dict) -> tuple:
+    """Task ke apne channels — inke @username / t.me link post mein reh sakte hain."""
+    return tuple(h for h in (cfg.get("channel_username"), cfg.get("source_username")) if h)
+
+
 async def post_amazon_original(context, uid: int, task: dict, msg, raw_plain: str, raw_entities: list,
                                amazon_urls: list, products: list, live: list, lang: str = "hi"):
     """
@@ -694,7 +715,7 @@ async def post_amazon_original(context, uid: int, task: dict, msg, raw_plain: st
 
     cp, ce = remove_footer(raw_plain, raw_entities)
     cp, ce = await replace_amazon_links(cp, ce, amazon_urls, tag)
-    cp, ce = strip_promo(cp, ce)
+    cp, ce = strip_promo(cp, ce, _own_handles(cfg))
     body = entities_to_html(cp, ce) if cp.strip() else ""
 
     best = live[0] if live else None
@@ -1052,6 +1073,7 @@ async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str
                                               parse_mode=ParseMode.HTML)
                         return
                 cp, ce = remove_footer(raw_plain, raw_entities)
+                cp, ce = strip_promo(cp, ce, _own_handles(cfg))
                 cp, ce = await replace_amazon_links(cp, ce, amazon_urls, tag)
                 body   = entities_to_html(cp, ce)
                 try:
@@ -1110,6 +1132,7 @@ async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str
 
         # ── Sirf unknown / search Amazon links ────────────────────────────
         cp, ce = remove_footer(raw_plain, raw_entities)
+        cp, ce = strip_promo(cp, ce, _own_handles(cfg))
         cp, ce = await replace_amazon_links(cp, ce, amazon_urls, tag)
         payload = _msg_payload(msg, cp, ce)
         status, detail = await post_other(context, uid, task, payload, lang)
@@ -1120,6 +1143,8 @@ async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str
     # NON-AMAZON
     # ==========================================================================
     cp, ce  = remove_footer(raw_plain, raw_entities)
+    # Doosre channel ka @username / Telegram link hatao (Flipkart, Myntra... sab posts)
+    cp, ce  = strip_promo(cp, ce, _own_handles(cfg))
     payload = _msg_payload(msg, cp, ce)
     status, detail = await post_other(context, uid, task, payload, lang)
     await _report_other(None, notify, status, detail, lang, footer_plain)
