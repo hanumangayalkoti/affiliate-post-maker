@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 
 from telegram.constants import ParseMode
 
-from storage import to_local, save_task
+from storage import to_local, patch_task_cfg
 from users import ADMIN_IDS, get_user, is_admin
 
 logger = logging.getLogger(__name__)
@@ -55,7 +55,10 @@ async def _channel_link(bot, uid: int, task: dict, kind: str) -> str:
             inv = await bot.create_chat_invite_link(chat_id=int(cid), name="Admin view")
             link = inv.invite_link
             c[key], c[key + "_for"] = link, str(cid)
-            save_task(uid, task["id"], c)
+            # Sirf invite link likho — `task` purani copy ho sakti hai (invite
+            # banne mein der lagti hai), poora cfg save kiya to user ki nayi
+            # settings (Discount Filter, buttons...) mit jaati thi.
+            patch_task_cfg(uid, task["id"], {key: link, key + "_for": str(cid)})
         except Exception as e:
             logger.info(f"Invite link nahi bana ({cid}): {e}")
             link = ""
