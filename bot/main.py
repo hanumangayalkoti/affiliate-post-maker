@@ -3,7 +3,7 @@ Deal Post Maker Bot — Made by Affiliates, for Affiliates.
 
 User apna Amazon affiliate tag aur channel set karke Amazon (aur baaki) deals
 ko sundar posts mein badal sakta hai. Plans: Basic / Pro / Premium, naye user
-ko 7 din Pro free. Har post ek TASK (Draft ➜ Destination) ke hisaab se jaati hai.
+ko 5 din Pro free. Har post ek TASK (Draft ➜ Destination) ke hisaab se jaati hai.
 """
 import os
 
@@ -229,7 +229,7 @@ async def gate_screen(bot, uid: int):
 
 
 async def after_gate(bot, uid: int):
-    """Gate ke baad: 7 din trial (ek hi baar) + pehla task."""
+    """Gate ke baad: TRIAL_DAYS (5) din trial (ek hi baar) + pehla task."""
     u = get_user(uid) or {}
     lang = get_lang(uid)
     if not is_admin(uid) and not u.get("trial_used") and not u.get("expires_at"):

@@ -201,7 +201,7 @@ def days_left(user: dict) -> float:
 
 
 def start_trial(user_id: int):
-    """7 din Pro free — har user ko ek hi baar. Returns expiry ya None."""
+    """TRIAL_DAYS (5) din Pro free — har user ko ek hi baar. Returns expiry ya None."""
     try:
         with get_db() as conn:
             with conn.cursor() as cur:
