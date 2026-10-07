@@ -616,7 +616,7 @@ def promo_text(task, lang):
 
 
 # ── Discount Filter (sirf Amazon) ────────────────────────────────────────
-DISCOUNT_OPTIONS = (0, 10, 20, 30, 40, 50, 60, 70, 80)
+DISCOUNT_OPTIONS = (0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 95)
 
 
 def min_discount(cfg: dict) -> int:
