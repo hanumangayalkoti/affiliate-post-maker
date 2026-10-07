@@ -589,15 +589,22 @@ def badge_text(task, lang):
 
 def search_text(task, lang):
     on = task["cfg"].get("search_links")
+    md = min_discount(task["cfg"])
+    note = tr(lang,
+              f"\n\n⚠️ <b>Discount Filter {md}%+ is ON</b> — these pages have no discount %, so they are "
+              "<b>skipped while the filter is ON</b>, even if Search Links is ON. Turn the filter OFF to post them.",
+              f"\n\n⚠️ <b>Discount Filter {md}%+ ON hai</b> — in pages ka discount % nahi hota, isliye "
+              "<b>filter ON rehte ye skip honge</b>, chahe Search Links ON ho. Post karne hain to filter OFF karein."
+              ) if md else ""
     return tr(lang,
               f"🔗 <b>Search Links</b> — {esc(tname(task, lang))}\n\n"
               f"Status: <b>{'✅ ON' if on else '❌ OFF'}</b>\n\n"
-              "Amazon search / deals page links (a list, not one product).\n"
-              "<b>ON</b> → they are posted too, with your tag.\n<b>OFF</b> → they are skipped.",
+              "Amazon search / deals / offer page links (a list, not one product).\n"
+              "<b>ON</b> → they are posted too, with your tag.\n<b>OFF</b> → they are skipped." + note,
               f"🔗 <b>Search Links</b> — {esc(tname(task, lang))}\n\n"
               f"Status: <b>{'✅ ON' if on else '❌ OFF'}</b>\n\n"
-              "Amazon search / deals page wale link (ek product nahi, list).\n"
-              "<b>ON</b> → ye bhi aapke tag ke saath post honge.\n<b>OFF</b> → skip honge.")
+              "Amazon search / deals / offer page wale link (ek product nahi, list).\n"
+              "<b>ON</b> → ye bhi aapke tag ke saath post honge.\n<b>OFF</b> → skip honge." + note)
 
 
 def promo_text(task, lang):
