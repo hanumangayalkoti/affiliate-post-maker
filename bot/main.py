@@ -52,7 +52,10 @@ from storage import (
     LOCAL_TZ,
 )
 from tiers import TRIAL_DAYS, TIERS
-from ui import btn, tr, chan, new_screen, track, track_id, user_lock, arrive, is_latest, GREEN, BLUE, TAGLINE
+from ui import (
+    btn, tr, chan, new_screen, track, track_id, user_lock, arrive, is_latest, command_name,
+    GREEN, BLUE, TAGLINE,
+)
 from users import (
     ADMIN_IDS, OWNER_ID, is_admin, is_active, is_blocked, get_user, upsert_user, get_lang,
     set_lang, set_default_task, days_left, limits, start_trial, users_expiring_soon,
@@ -307,7 +310,7 @@ def user_command(fn):
                 # User ne jaldi-jaldi kai command bheje (jaise 30 baar /start) — sirf
                 # AAKHRI wala jawab dega. Ye wala skip, iska message agli screen ke
                 # saath delete hoga. Warna har ek ka jawab + Telegram speed-limit = minute bhar ki der.
-                track_id(context, update.message.message_id)
+                track_id(context, update.message.message_id, command_name(update.message.text))
                 if fn is cmd_start and getattr(context, "args", None):
                     try:                               # skip hua /start ref_ — referral phir bhi jodo
                         await referral.handle_start_arg(context.bot, uid, context.args[0])
@@ -338,7 +341,7 @@ async def _user_command(fn, update: Update, context: ContextTypes.DEFAULT_TYPE):
             await referral.handle_start_arg(context.bot, uid, context.args[0])
         except Exception as e:
             logger.error(f"Referral start fail ({uid}): {e}")
-    await new_screen(context, context.bot, msg.chat_id, msg.message_id)
+    await new_screen(context, context.bot, msg.chat_id, msg.message_id, command_name(msg.text))
     prev = _drop_pending(context)
     if prev and fn is cmd_cancel:
         context.user_data["_cancelled"] = prev
@@ -361,9 +364,10 @@ def admin_command(fn):
         n = arrive(u.id)
         async with user_lock(u.id):
             if not is_latest(u.id, n):
-                track_id(context, update.message.message_id)
+                track_id(context, update.message.message_id, command_name(update.message.text))
                 return
-            await new_screen(context, context.bot, update.message.chat_id, update.message.message_id)
+            await new_screen(context, context.bot, update.message.chat_id, update.message.message_id,
+                             command_name(update.message.text))
             prev = _drop_pending(context)
             if prev:
                 track(context, await update.message.reply_text(_pending_note(prev, get_lang(u.id)),
