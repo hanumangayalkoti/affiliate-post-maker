@@ -1087,10 +1087,15 @@ async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str
             # MINIMAL — original caption, ek hi post (kitne bhi product links hon)
             fetched = await get_products_by_asins([p["asin"] for p in products])
             live = [fetched[p["asin"]] for p in products if p["asin"] in fetched]
-            # Discount Filter: koi bhi ek product pass kare to post. Kisi product ka
-            # data hi na mile to bhi post (deal miss na ho) — skip sirf tab jab saare
-            # products ka discount pata hai aur sab kam hain.
-            if md and live and len(live) == len(products) and all(_disc(p) < md for p in live):
+            if not live and md:
+                # Filter ON aur kisi product ki detail nahi mili → discount pata nahi, skip
+                await _edit_or_notify(wait_msg, notify,
+                                      _nodata_skip_text(lang, products[0]["asin"], len(products), md),
+                                      parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+                return
+            # Discount Filter: koi bhi ek product pass kare to post. Jis product ka data
+            # nahi mila uska discount pata nahi — wo pass nahi maana jaata.
+            if md and live and all(_disc(p) < md for p in live):
                 best = max(_disc(p) for p in live)
                 await _edit_or_notify(wait_msg, notify, _low_discount_text(lang, best, md),
                                       parse_mode=ParseMode.HTML, disable_web_page_preview=True)
@@ -1109,11 +1114,8 @@ async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str
                                "\n⚠️ Amazon se product details nahi mili.")
                     text += _nodata_reason(lang, products[0]["asin"])
                 if md:
-                    if live and max(_disc(p) for p in live) >= md:
-                        text += tr(lang, f"\n📉 Discount Filter {md}%+: ✅ passed",
-                                   f"\n📉 Discount Filter {md}%+: ✅ pass")
-                    else:
-                        text += _filter_line(lang, md, nodata=1)
+                    text += tr(lang, f"\n📉 Discount Filter {md}%+: ✅ passed",
+                               f"\n📉 Discount Filter {md}%+: ✅ pass")
                 text += footer
             elif status == "duplicate":
                 text = tr(lang, f"♻️ <b>Already posted</b> ({esc(detail)} ago) — skipped.",
@@ -1168,6 +1170,14 @@ async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str
                 if i < len(live) - 1:
                     await asyncio.sleep(POST_GAP_SECONDS)
 
+            # Single product + data nahi mila:
+            #  • Discount Filter ON → skip (discount pata hi nahi), duplicate mein nahi gina
+            #  • Filter OFF → original text user ke tag ke saath (deal miss na ho)
+            if len(products) == 1 and not posted and nodata and md:
+                await _edit_or_notify(wait_msg, notify, _nodata_skip_text(lang, products[0]["asin"], md=md),
+                                      parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+                return
+
             # Single product + data nahi mila → original text user ke tag ke saath
             if len(products) == 1 and not posted and nodata:
                 asin = products[0]["asin"]
@@ -1198,7 +1208,7 @@ async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str
                            "original text with your affiliate link.",
                            "✅ <b>Post ho gaya!</b>\n⚠️ Amazon se product details nahi mili — aapka "
                            "original text aapke affiliate link ke saath bheja.")
-                        + _nodata_reason(lang, asin) + _filter_line(lang, md, nodata=1) + footer,
+                        + _nodata_reason(lang, asin) + footer,
                         parse_mode=ParseMode.HTML, disable_web_page_preview=True)
                 except Exception as e:
                     release_posted(uid, task["id"], fb_key)
@@ -1228,9 +1238,11 @@ async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str
                 lines.append(tr(lang, f"\n♻️ {len(dupes)} already posted in last 24h (skipped)",
                                 f"\n♻️ {len(dupes)} pichle 24 ghante mein post ho chuki (skip)"))
             if nodata:
-                lines.append(tr(lang, f"⚠️ Amazon returned no data for {len(nodata)}",
-                                f"⚠️ {len(nodata)} ka data Amazon se nahi mila")
-                             + _nodata_reason(lang, nodata[0]))
+                lines.append(tr(lang, f"⏭️ {len(nodata)} skipped — Amazon returned no product details",
+                                f"⏭️ {len(nodata)} skip — Amazon se product details nahi mili")
+                             + _nodata_reason(lang, nodata[0])
+                             + tr(lang, "\n<i>Send them again in a while — not counted as duplicate.</i>",
+                                  "\n<i>Thodi der baad dobara bhejein — duplicate nahi maana jayega.</i>"))
             if errors:
                 lines.append(f"❌ {len(errors)} — {esc(errors[0])}")
             if low:
@@ -1242,8 +1254,7 @@ async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str
                 lines.append(tr(lang, f"🚫 {len(searches)} search pages skipped",
                                 f"🚫 {len(searches)} search page chhod diye"))
             if md:
-                lines.append(_filter_line(lang, md, passed=len(live), skipped=len(low),
-                                          nodata=len(nodata)).lstrip("\n"))
+                lines.append(_filter_line(lang, md, passed=len(live), skipped=len(low)).lstrip("\n"))
             if all_skipped:
                 names = ", ".join(FIELD_LABELS.get(k, k) for k in all_skipped)
                 lines.append(tr(lang, f"\n✂️ Not enough space, left out: <b>{esc(names)}</b>",
@@ -1305,7 +1316,22 @@ def _deal_info(p: dict) -> str:
     return "\n".join(out)
 
 
-def _filter_line(lang: str, md: int, passed: int = 0, skipped: int = 0, nodata: int = 0) -> str:
+def _nodata_skip_text(lang: str, asin: str, n: int = 1, md: int = 0) -> str:
+    """Discount Filter ON + Amazon se detail nahi mili → post nahi hui. Draft mein saaf wajah."""
+    what = f"<code>{esc(asin)}</code>" + (f" (+{n - 1})" if n > 1 else "")
+    return (tr(lang,
+               f"⏭️ <b>Skipped — Amazon didn't return product details</b>\n🛍️ {what}",
+               f"⏭️ <b>Skip — Amazon se product details nahi mili</b>\n🛍️ {what}")
+            + _nodata_reason(lang, asin)
+            + tr(lang,
+                 f"\n📉 Discount Filter {md}%+ is ON — discount unknown, so not posted.",
+                 f"\n📉 Discount Filter {md}%+ ON hai — discount pata nahi chala, isliye post nahi ki.")
+            + tr(lang,
+                 "\n<i>Send it again in a while — it won't be counted as a duplicate.</i>",
+                 "\n<i>Thodi der baad dobara bhejein — duplicate nahi maana jayega.</i>"))
+
+
+def _filter_line(lang: str, md: int, passed: int = 0, skipped: int = 0) -> str:
     """Discount Filter ON ho to reply mein saaf likho ki kya hua."""
     if not md:
         return ""
@@ -1314,9 +1340,6 @@ def _filter_line(lang: str, md: int, passed: int = 0, skipped: int = 0, nodata: 
         parts.append(tr(lang, f"✅ {passed} passed", f"✅ {passed} pass"))
     if skipped:
         parts.append(tr(lang, f"⏭️ {skipped} skipped", f"⏭️ {skipped} skip"))
-    if nodata:
-        parts.append(tr(lang, f"❓ {nodata} not checked (no Amazon data — posted so the deal isn't missed)",
-                        f"❓ {nodata} check nahi hua (Amazon data nahi mila — deal miss na ho isliye post ki)"))
     return f"\n📉 Discount Filter {md}%+: " + (" · ".join(parts) or "—")
 
 
