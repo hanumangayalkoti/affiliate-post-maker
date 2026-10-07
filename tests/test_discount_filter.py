@@ -118,6 +118,19 @@ class DiscountFilterTest(unittest.TestCase):
         self.go(f"Deal {A1}", {}, amz_detailed=False, min_discount=0)
         self.assertEqual(self.original, [True])
 
+    OFFER = ("Cashback https://www.amazon.in/h/rewards/dp/amzn1.rewards.rewardAd.E42POHQGPYDT2 "
+             "Buy https://www.amazon.in/l/205736272031")
+
+    def test_offer_pages_skipped_when_filter_on(self):
+        replies = self.go(self.OFFER, {}, search_links=True, min_discount=80)
+        self.assertEqual(self.other, [])               # post NAHI hua
+        self.assertIn("koi product nahi", replies[-1])
+        self.assertIn("80%+", replies[-1])
+
+    def test_offer_pages_posted_when_filter_off(self):
+        self.go(self.OFFER, {}, search_links=True, min_discount=0)
+        self.assertEqual(self.other, [True])           # pehle jaisa post
+
     def test_non_amazon_never_filtered(self):
         self.go("Flipkart deal https://fkrt.it/x", {})
         self.assertEqual(self.other, [True])

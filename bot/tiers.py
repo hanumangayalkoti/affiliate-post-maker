@@ -16,7 +16,7 @@ def _env_int(name: str, default: int) -> int:
 
 
 PLAN_DAYS = _env_int("PLAN_DAYS", 30)
-TRIAL_DAYS = _env_int("TRIAL_DAYS", 7)
+TRIAL_DAYS = _env_int("TRIAL_DAYS", 5)
 TRIAL_TIER = "pro"
 
 TIERS = {

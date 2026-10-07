@@ -15,7 +15,7 @@ Hinglish dono mein, "aap" wali izzat ke saath.
 | Posts / din (har task) | 500 | 1500 | 5000 |
 | Image Card | ❌ | ✅ | ✅ |
 
-- Naye user ko **7 din Pro free** (ek hi baar)
+- Naye user ko **5 din Pro free** (ek hi baar)
 - Plan badalne pe bache din ki keemat naye plan mein judti hai
 - Chhote plan pe extra tasks **pause** hote hain (delete nahi) — user chunta hai kaunsa chale
 - Payment: Razorpay (UPI/Card, automatic) + Telegram Stars (INR ke barabar)
@@ -63,7 +63,7 @@ Hinglish dono mein, "aap" wali izzat ke saath.
 | PRICE_BASIC / PRO / PREMIUM | ❌ | default 50 / 100 / 250 |
 | STARS_BASIC / PRO / PREMIUM | ❌ | default 50 / 100 / 250 |
 | DAILY_BASIC / PRO / PREMIUM | ❌ | default 500 / 1500 / 5000 |
-| PLAN_DAYS / TRIAL_DAYS | ❌ | default 30 / 7 |
+| PLAN_DAYS / TRIAL_DAYS | ❌ | default 30 / 5 |
 | ADMIN_IDS | ❌ | Aur admins, comma se |
 | BOT_NAME / SUPPORT_USERNAME | ❌ | |
 | CACHE_FRESH_MINUTES / CACHE_KEEP_DAYS / TZ_NAME | ❌ | 30 / 5 / Asia/Kolkata |
