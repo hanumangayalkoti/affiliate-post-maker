@@ -105,11 +105,11 @@ def _faqs(lang):
          tr(lang,
             "Open /refer and share your link. Whenever someone who joined with it pays — first time and every "
             "renewal — you get a commission of that payment. Once your balance reaches the minimum, tap "
-            "💸 Withdraw (UPI / USDT / Stars / Telegram Wallet). /refer also shows every referral and your "
+            "💸 Withdraw (to your UPI ID). /refer also shows every referral and your "
             "payout history.",
             "/refer kholein aur apna link share karein. Us link se juda koi bhi jab payment kare — pehli baar "
             "aur har renewal pe — aapko us payment ka commission milta hai. Balance minimum tak pahunche to "
-            "💸 Withdraw dabayein (UPI / USDT / Stars / Telegram Wallet). /refer mein har referral aur payout "
+            "💸 Withdraw dabayein (UPI ID pe). /refer mein har referral aur payout "
             "history bhi dikhti hai.")),
         (tr(lang, "What happens if I upgrade or downgrade?", "Plan upgrade/downgrade karne pe kya hoga?"),
          tr(lang,

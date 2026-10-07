@@ -308,6 +308,11 @@ def user_command(fn):
                 # AAKHRI wala jawab dega. Ye wala skip, iska message agli screen ke
                 # saath delete hoga. Warna har ek ka jawab + Telegram speed-limit = minute bhar ki der.
                 track_id(context, update.message.message_id)
+                if fn is cmd_start and getattr(context, "args", None):
+                    try:                               # skip hua /start ref_ — referral phir bhi jodo
+                        await referral.handle_start_arg(context.bot, uid, context.args[0])
+                    except Exception as e:
+                        logger.error(f"Referral start fail ({uid}): {e}")
                 return
             await _user_command(fn, update, context)
     return wrapper
@@ -325,6 +330,14 @@ async def _user_command(fn, update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.reply_text("⛔ " + tr(lang, "Your access has been blocked.",
                                         "Aapka access band kar diya gaya hai.") + "\n" + billing.support_line(lang))
         return
+    if fn is cmd_start and getattr(context, "args", None):
+        # Referral link (/start ref_CODE) gate se PEHLE — naya user pehle language /
+        # join screen dekhta hai aur cmd_start tak pahunchta hi nahi tha, to code kho
+        # jaata tha aur naye user ka referral judta hi nahi tha.
+        try:
+            await referral.handle_start_arg(context.bot, uid, context.args[0])
+        except Exception as e:
+            logger.error(f"Referral start fail ({uid}): {e}")
     await new_screen(context, context.bot, msg.chat_id, msg.message_id)
     prev = _drop_pending(context)
     if prev and fn is cmd_cancel:
@@ -387,8 +400,6 @@ HOME_ROW = [btn("🏠 Home", callback_data="home")]
 
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE, uid: int):
-    if context.args:
-        await referral.handle_start_arg(context.bot, uid, context.args[0])
     await _send(update, context, home_text(uid, update.effective_user.first_name), home_kb(uid))
 
 

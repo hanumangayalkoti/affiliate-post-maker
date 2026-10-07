@@ -2,10 +2,14 @@
 referral.py — Refer & Earn (DealsKoti Auto Forwarder jaisa hi).
 
   • Har user ka ek chhota code: t.me/<bot>?start=ref_<CODE> (Telegram ID nahi dikhta)
-  • Referred user jab bhi payment kare (Razorpay ya Stars, har renewal pe) —
-    referrer ko us payment ka REFERRAL_PERCENT% (default 20%) commission
-  • Balance MIN_WITHDRAW (default ₹500) hone pe withdraw request — UPI / USDT /
-    Stars / Telegram Wallet. Admin /withdrawals se Paid / Reject karta hai
+  • Jab tak user ne EK BHI payment nahi kiya, jiske link se wo aakhri baar aaya
+    wahi uska referrer (pehle se bot chala chuka user bhi). Pehla payment hote hi
+    referrer HAMESHA ke liye fix — uske baad koi link nahi badal sakta
+  • Referred user jab bhi payment kare (pehla + har renewal, Razorpay ya Stars) —
+    referrer ko us payment ke ₹ ka REFERRAL_PERCENT% (default 20%). Stars mein
+    payment ho to plan ki ₹ keemat ka 20%
+  • Balance MIN_WITHDRAW (default ₹150) hone pe withdraw request — sirf UPI.
+    Admin /withdrawals se Paid / Reject karta hai
   • Refer screen pe poori info: link, kitne aaye, kitne paid, kamai, balance,
     withdraw history, aur har referral ki list
 
@@ -35,24 +39,16 @@ def _env_int(name: str, default: int) -> int:
 
 
 REFERRAL_PERCENT = _env_int("REFERRAL_PERCENT", 20)
-MIN_WITHDRAW_PAISE = _env_int("MIN_WITHDRAW", 500) * 100
+MIN_WITHDRAW_PAISE = _env_int("MIN_WITHDRAW", 150) * 100
 PAGE = 10
 
+# Payout sirf UPI se
 PAYOUT_METHODS = {
     "upi":    "🇮🇳 UPI",
-    "usdt":   "🪙 USDT TRC20",
-    "stars":  "⭐ Telegram Stars",
-    "wallet": "💬 Telegram Wallet",
 }
 PAYOUT_PROMPTS = {
     "upi":    ("Send your UPI ID.\nExample: <code>name@paytm</code>",
                "Apni UPI ID bhejein.\nJaise: <code>naam@paytm</code>"),
-    "usdt":   ("Send your USDT TRC20 wallet address.\nExample: <code>TXYZ...abc</code>",
-               "Apna USDT TRC20 wallet address bhejein.\nJaise: <code>TXYZ...abc</code>"),
-    "stars":  ("Send the @username the Stars should go to.\nExample: <code>@yourname</code>",
-               "Jis @username pe Stars bhejne hain wo bhejein.\nJaise: <code>@aapkanaam</code>"),
-    "wallet": ("Send the @username linked to your Telegram Wallet.\nExample: <code>@yourname</code>",
-               "Telegram Wallet se juda @username bhejein.\nJaise: <code>@aapkanaam</code>"),
 }
 
 
@@ -160,9 +156,15 @@ def uid_by_code(code: str):
 
 def link_referral(referrer_id: int, referred_id: int) -> bool:
     """
-    Naya referral jodo. Sirf tab jab: khud ko refer nahi kiya, pehle se kisi ka
-    referral nahi, aur referred user ne kabhi payment nahi kiya (warna koi bhi
-    purana paying customer ko apna bana leta).
+    Referral jodo / badlo. True = is referrer ke saath ab juda (naya ya badla).
+
+      • Khud ko refer nahi kar sakte; referrer bot ka user hona chahiye
+      • User ne abhi tak EK BHI payment nahi kiya → jiske link se aaya, wahi
+        referrer (pehle kisi aur ke link se aaya tha to bhi badal jaata hai).
+        Matlab jis link se wo pehla payment karega, commission ussi ko
+      • Ek bhi payment ho gaya → referrer hamesha ke liye fix, koi link nahi badal sakta
+    Row lock + payment check ek hi transaction mein, taaki payment ke saath-saath
+    aaya link bhi referrer na badal paaye.
     """
     if not referrer_id or referrer_id == referred_id:
         return False
@@ -172,12 +174,20 @@ def link_referral(referrer_id: int, referred_id: int) -> bool:
                 cur.execute("SELECT 1 FROM users WHERE user_id = %s", (referrer_id,))
                 if not cur.fetchone():
                     return False
+                cur.execute("SELECT pg_advisory_xact_lock(%s)", (referred_id,))
                 cur.execute("SELECT 1 FROM payments WHERE user_id = %s AND status = 'paid' LIMIT 1",
                             (referred_id,))
                 if cur.fetchone():
-                    return False
-                cur.execute("INSERT INTO referrals (referrer_id, referred_id) VALUES (%s, %s) "
-                            "ON CONFLICT (referred_id) DO NOTHING RETURNING id", (referrer_id, referred_id))
+                    return False                       # paying customer — referrer fix
+                cur.execute("SELECT 1 FROM referral_credits WHERE referred_id = %s LIMIT 1", (referred_id,))
+                if cur.fetchone():
+                    return False                       # commission ban chuka — fix
+                cur.execute(
+                    """INSERT INTO referrals (referrer_id, referred_id) VALUES (%s, %s)
+                       ON CONFLICT (referred_id) DO UPDATE
+                       SET referrer_id = EXCLUDED.referrer_id, created_at = NOW()
+                       WHERE referrals.referrer_id <> EXCLUDED.referrer_id
+                       RETURNING id""", (referrer_id, referred_id))
                 return cur.fetchone() is not None
     except Exception as e:
         logger.error(f"link_referral error: {e}")
@@ -209,6 +219,7 @@ def credit(referred_id: int, amount_paise: int, tier: str, source: str, payment_
     try:
         with get_db() as conn:
             with conn.cursor() as cur:
+                cur.execute("SELECT pg_advisory_xact_lock(%s)", (referred_id,))
                 cur.execute("SELECT referrer_id FROM referrals WHERE referred_id = %s", (referred_id,))
                 row = cur.fetchone()
                 if not row:
@@ -286,7 +297,10 @@ def get_payout(uid: int):
             with conn.cursor() as cur:
                 cur.execute("SELECT payout_method, payout_address FROM users WHERE user_id = %s", (uid,))
                 row = cur.fetchone()
-                return (row[0], row[1]) if row else (None, None)
+        # Purana method (USDT / Stars / Wallet) ab nahi chalta — set nahi maano, UPI daalna padega
+        if not row or row[0] not in PAYOUT_METHODS or not row[1]:
+            return None, None
+        return row[0], row[1]
     except Exception as e:
         logger.error(f"get_payout error: {e}")
         return None, None
@@ -424,9 +438,10 @@ async def handle_start_arg(bot, uid: int, arg: str):
     lang = get_lang(referrer)
     await dm_user(bot, referrer,
                   tr(lang, f"🎉 <b>New referral joined!</b>\n👤 {who(uid)}\n\n"
-                           f"You earn {REFERRAL_PERCENT}% of every payment they make. /refer",
+                           f"You earn {REFERRAL_PERCENT}% of every payment they make — first payment and "
+                           "every renewal. /refer",
                      f"🎉 <b>Naya referral aaya!</b>\n👤 {who(uid)}\n\n"
-                     f"Ye jab bhi payment karenge, aapko {REFERRAL_PERCENT}% milega. /refer"),
+                     f"Ye jab bhi payment karenge — pehla aur har renewal — aapko {REFERRAL_PERCENT}% milega. /refer"),
                   parse_mode=ParseMode.HTML)
     await notify_admins(bot, f"🎁 <b>Referral</b>: {who(uid)} ← {who(referrer)}", uid)
 
@@ -468,9 +483,13 @@ async def refer_screen(bot, uid: int, lang: str):
     lines = [
         tr(lang, "🎁 <b>Refer & Earn</b>\n", "🎁 <b>Refer & Earn</b>\n"),
         tr(lang, f"Earn <b>{REFERRAL_PERCENT}% commission</b> on <b>every payment</b> your referrals make — "
-                 "every renewal, for life.\n",
-           f"Aapke referral jab bhi payment karein — <b>har renewal pe, hamesha</b> — aapko "
-           f"<b>{REFERRAL_PERCENT}% commission</b>.\n"),
+                 "first payment and every renewal, for life (Stars payments count at the plan's ₹ price).\n"
+                 "<i>Someone who hasn't paid yet becomes yours when they open your link; after their first "
+                 "payment they stay yours forever.</i>\n",
+           f"Aapke referral jab bhi payment karein — <b>pehla aur har renewal, hamesha</b> — aapko "
+           f"<b>{REFERRAL_PERCENT}% commission</b> (Stars se payment ho to plan ki ₹ keemat ka).\n"
+           "<i>Jisne abhi tak payment nahi kiya, wo aapke link se aaye to aapka. Pehla payment hote hi "
+           "hamesha ke liye aapka.</i>\n"),
         tr(lang, "🔗 <b>Your link</b> (tap to copy):", "🔗 <b>Aapka link</b> (tap karke copy):"),
         f"<code>{esc(link)}</code>\n",
         tr(lang, "📊 <b>Your referrals</b>", "📊 <b>Aapke referrals</b>"),
@@ -606,10 +625,11 @@ def method_screen(uid: int, lang: str):
     method, address = get_payout(uid)
     cur = (f"{PAYOUT_METHODS.get(method, method)} — <code>{esc(address)}</code>"
            if method and address else tr(lang, "❌ not set", "❌ set nahi"))
-    rows = [[btn(label, callback_data=f"ref:pmset:{k}")] for k, label in PAYOUT_METHODS.items()]
+    rows = [[btn(("✏️ Change " if method else "➕ Add ") + label, BLUE, callback_data=f"ref:pmset:{k}")]
+            for k, label in PAYOUT_METHODS.items()]
     rows.append([btn("⬅️ Refer & Earn", callback_data="ref:home")])
-    return (tr(lang, f"🏦 <b>Payout Method</b>\n\nCurrent: {cur}\n\nChoose how you want to be paid:",
-               f"🏦 <b>Payout Method</b>\n\nAbhi: {cur}\n\nPaise kaise lene hain, chunein:"),
+    return (tr(lang, f"🏦 <b>Payout Method</b>\n\nCurrent: {cur}\n\nPayouts are sent to your <b>UPI ID</b>.",
+               f"🏦 <b>Payout Method</b>\n\nAbhi: {cur}\n\nPayout aapki <b>UPI ID</b> pe bheja jaata hai."),
             InlineKeyboardMarkup(rows))
 
 
