@@ -189,10 +189,10 @@ def build_amazon_caption(product: dict, short_link: str, cfg: dict,
 
     link_line = ""
     if show_link and short_link:
-        # Link SADA text mein — Telegram khud link bana deta hai aur tap pe seedha
-        # khulta hai. <a href> lagane pe Telegram har baar "Open Link?" poochta hai.
+        # Link bold, par <a href> ke BINA — Telegram khud link banata hai aur tap pe
+        # seedha khulta hai. <a href> lagane pe Telegram har baar "Open Link?" poochta hai.
         shown = display_link(short_link) or short_link
-        link_line = f'🛒 {_esc(shown)}'
+        link_line = f'🛒 <b>{_esc(shown)}</b>'
 
     # Header / footer / link ki jagah pehle se reserve
     reserved = 0

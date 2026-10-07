@@ -308,7 +308,7 @@ async def replace_amazon_links(text: str, entities: list, urls: list, tag: str):
         except Exception as e:
             logger.error(f"Affiliate link fail: {e}")
             continue
-        # Chhota asli link, tag ke saath, KHULA dikhe (https://amazon.in/dp/ASIN?tag=..)
+        # Asli link, tag ke saath, KHULA dikhe (https://www.amazon.in/dp/ASIN?tag=..)
         # — chhupa link nahi, taaki Telegram "Open this link?" na pooche.
         shown = display_link(short) or short
         pos = 0
@@ -482,8 +482,10 @@ def entities_to_html(text: str, entities: list) -> str:
             continue
         etype = str(getattr(ent.type, "value", ent.type))
         if etype == "text_link" and _LOOKS_LIKE_URL.match(text[s:e]):
-            # Dikhne wala text khud ek link hai — sada text rakho, Telegram khud link
-            # banayega aur tap pe seedha kholega ("Open Link?" wala sawaal nahi aayega)
+            # Dikhne wala text khud ek link hai — bold rakho par <a href> nahi; Telegram
+            # khud link banayega aur tap pe seedha kholega ("Open Link?" nahi aayega)
+            open_tags[s]    = "<b>" + open_tags[s]
+            close_tags[e-1] = close_tags[e-1] + "</b>"
             continue
         if etype == "text_link":
             url = html_lib.escape(ent.url or "")

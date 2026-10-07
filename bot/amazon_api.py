@@ -249,8 +249,11 @@ def make_affiliate_url(asin: str, tag: str) -> str:
 
 
 def display_link(url: str) -> str:
-    """Post mein dikhne wala chhota asli Amazon link, tag ke saath:
-    https://amazon.in/dp/B0XXXXXXXX?tag=user-21
+    """Post mein dikhne wala asli Amazon link, tag ke saath:
+    https://www.amazon.in/dp/B0XXXXXXXX?tag=user-21
+
+    'www' ke saath hi — bina 'www' ke Amazon ek extra redirect karta hai aur
+    Associates ka Link Checker jaise tools link ko pehchaan nahi paate.
 
     Link poora KHULA dikhta hai — kuch chhupa nahi. Chhupe link (text alag,
     link alag) pe Telegram "Open this link?" poochta hai; khule link pe nahi.
@@ -258,7 +261,7 @@ def display_link(url: str) -> str:
     asin = extract_asin(url or "")
     if not asin:
         return ""
-    host = MARKETPLACE[4:] if MARKETPLACE.startswith("www.") else MARKETPLACE
+    host = MARKETPLACE if MARKETPLACE.startswith("www.") else "www." + MARKETPLACE
     try:
         tag = urllib.parse.parse_qs(urllib.parse.urlparse(url).query).get("tag", [""])[0]
     except Exception:
