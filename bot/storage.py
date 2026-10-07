@@ -527,29 +527,41 @@ def find_tasks_by_dest(chat_id: int, username: str = "") -> list:
 # =============================================================================
 # CHAT CLEAN — screen ke message IDs (restart / redeploy ke baad bhi yaad)
 # =============================================================================
-def screen_ids_get(user_id: int) -> list:
+def screen_state_get(user_id: int) -> dict:
+    """Chat clean ki yaad: {"cmd": "start", "ids": [...], "known": [...]}.
+    Purani format (sirf IDs ki list) bhi padh lete hain — usme command ka naam
+    nahi hota, to us baar kuch delete nahi hota (safe)."""
     try:
         with get_db() as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT msg_ids FROM ui_screens WHERE user_id = %s", (user_id,))
                 row = cur.fetchone()
-        data = row[0] if row else []
+        data = row[0] if row else None
         if isinstance(data, str):
             data = json.loads(data)
-        return [int(x) for x in data if isinstance(x, int) or str(x).isdigit()]
+        if isinstance(data, list):
+            ids = [int(x) for x in data if str(x).isdigit()]
+            return {"cmd": None, "ids": ids, "known": ids}
+        if isinstance(data, dict):
+            clean = lambda v: [int(x) for x in (v or []) if str(x).isdigit()]   # noqa: E731
+            return {"cmd": data.get("cmd") or None, "ids": clean(data.get("ids")),
+                    "known": clean(data.get("known"))}
     except Exception as e:
-        logger.error(f"screen_ids_get error: {e}")
-        return []
+        logger.error(f"screen_state_get error: {e}")
+    return {"cmd": None, "ids": [], "known": []}
 
 
-def screen_ids_set(user_id: int, ids: list):
+def screen_state_set(user_id: int, state: dict):
     try:
+        data = {"cmd": state.get("cmd"),
+                "ids": [int(x) for x in state.get("ids") or []][-80:],
+                "known": [int(x) for x in state.get("known") or []][-300:]}
         with get_db() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """INSERT INTO ui_screens (user_id, msg_ids) VALUES (%s, %s)
                        ON CONFLICT (user_id) DO UPDATE SET msg_ids = EXCLUDED.msg_ids""",
-                    (user_id, json.dumps([int(x) for x in ids][-60:])),
+                    (user_id, json.dumps(data)),
                 )
     except Exception as e:
-        logger.error(f"screen_ids_set error: {e}")
+        logger.error(f"screen_state_set error: {e}")

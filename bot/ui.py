@@ -65,17 +65,36 @@ def chan(title: str = "", username: str = "", fallback: str = "—") -> str:
 
 
 # =============================================================================
-# CHAT CLEAN
+# CHAT CLEAN — sirf LAGATAR SAME command ki duplicate screens hatao
 # =============================================================================
-KEEP_GROUPS = 3          # pichle itne commands (aur unke jawab) delete honge
-_TRAIL = "_trail"
+# Rule:
+#   • /start, jawab, /start, jawab, /start, jawab  → pehle wale /start + jawab
+#     delete, sirf aakhri bache (har naye /start pe pichla wala hat-ta hai)
+#   • Beech mein REPORT (ya koi bhi aur message) aaya → sequence toot gaya,
+#     report se pehle wala kuch nahi chhua jaata. Reports kabhi delete nahi hote.
+#   • Alag command (/start ke baad /help) → sequence toot gaya, kuch delete nahi.
+#
+# "Beech mein kuch aaya?" kaise pata: private chat mein Telegram har message ko
+# line se number deta hai (user ke aur bot ke dono). Bot yaad rakhta hai ki screen
+# ke kaun se number uske the ("known"). Pichli screen se naye command tak koi bhi
+# number aisa mila jo known nahi — matlab beech mein report / deal / kuch aur aaya.
+_SCREEN = "_screen"
+KNOWN_MAX = 300
 
 
-def _trail(context) -> list:
-    tr_ = context.user_data.get(_TRAIL)
-    if not isinstance(tr_, list):
-        tr_ = context.user_data[_TRAIL] = []
-    return tr_
+def _screen(context) -> dict:
+    s = context.user_data.get(_SCREEN)
+    if not isinstance(s, dict):
+        s = context.user_data[_SCREEN] = {"cmd": None, "ids": [], "known": [], "loaded": False}
+    return s
+
+
+def command_name(text: str) -> str:
+    """'/start ref_x' → 'start', '/Help@MyBot' → 'help'."""
+    first = (text or "").strip().split(maxsplit=1)[0] if (text or "").strip() else ""
+    if not first.startswith("/"):
+        return ""
+    return first[1:].split("@", 1)[0].lower()
 
 
 _locks: dict = {}
@@ -94,8 +113,7 @@ def is_latest(uid: int, n: int) -> bool:
 
 
 def user_lock(uid: int) -> asyncio.Lock:
-    """Ek user ke commands ek-ek karke chalein. Do baar /start jaldi dabaya to dono
-    saath chal ke ek doosre ki screen nahi bigaadte — doosra pehle wale ko saaf karta hai."""
+    """Ek user ke commands ek-ek karke chalein (do /start ek saath screen nahi bigaadte)."""
     lock = _locks.get(uid)
     if lock is None:
         if len(_locks) > 20000:
@@ -108,20 +126,28 @@ def _uid(context):
     return getattr(context, "_user_id", None)
 
 
+# Background kaam ke tasks ka reference rakhna zaroori hai — warna Python unhe
+# beech mein hi mita sakta hai aur delete adhoora reh jaata hai.
+_bg_tasks: set = set()
+
+
+def _spawn(coro):
+    t = asyncio.get_running_loop().create_task(coro)
+    _bg_tasks.add(t)
+    t.add_done_callback(_bg_tasks.discard)
+    return t
+
+
 _save_pending: set = set()
 
 
 def _save(context):
-    """
-    Screen ke message IDs DB mein — bot restart ho tab bhi agla command purani
-    screen saaf kare. Background mein aur thoda ruk ke (0.5s) likhte hain: ek
-    screen ke kai messages ek hi write mein, aur DB ka kaam bot ko nahi rokta.
-    """
+    """Screen ki yaad DB mein (restart ke baad bhi) — background mein, thoda ruk ke, ek hi write."""
     uid = _uid(context)
     if not uid or uid in _save_pending:
         return
     try:
-        loop = asyncio.get_running_loop()
+        asyncio.get_running_loop()
     except RuntimeError:
         return
     _save_pending.add(uid)
@@ -129,77 +155,133 @@ def _save(context):
     async def _later():
         try:
             await asyncio.sleep(0.5)
-            ids = [m for g in _trail(context) for m in g]   # likhte waqt ki taaza list
-            from storage import screen_ids_set
-            await loop.run_in_executor(None, screen_ids_set, uid, ids)
+            s = _screen(context)
+            from storage import screen_state_set
+            snap = {"cmd": s.get("cmd"), "ids": list(s["ids"]), "known": list(s["known"])}
+            await asyncio.get_running_loop().run_in_executor(None, screen_state_set, uid, snap)
         except Exception as e:
             logger.error(f"Screen save fail ({uid}): {e}")
         finally:
             _save_pending.discard(uid)
 
-    loop.create_task(_later())
+    _spawn(_later())
+
+
+def _remember(s: dict, mid: int):
+    if mid is None:
+        return
+    if mid not in s["ids"]:
+        s["ids"].append(mid)
+    if mid not in s["known"]:
+        s["known"].append(mid)
+        if len(s["known"]) > KNOWN_MAX:
+            del s["known"][:-KNOWN_MAX]
+
+
+def _nothing_between(s: dict, new_id: int) -> bool:
+    """Pichli screen ke pehle message se naye command tak har message number bot ka
+    jaana-pehchana hai? Ek bhi anjaan (report / deal / kuch aur) → False."""
+    if not s["ids"] or not new_id:
+        return False
+    known = set(s["known"])
+    return all(i in known for i in range(min(s["ids"]), new_id))
+
+
+async def _raw_delete(bot, chat_id: int, ids: list):
+    """
+    Telegram ko seedha delete request — bot ke speed-controller (rate limiter) ko
+    BYPASS karke. Wo controller "ruko" aane pe POORE bot ko (saare users ke liye)
+    rok deta tha, sirf ek delete ki wajah se. Delete ka "ruko" sirf delete ko roke.
+    """
+    from telegram import Bot
+    return await Bot._do_post(bot, "deleteMessages", {"chat_id": chat_id, "message_ids": ids})
+
+
+async def _raw_delete_one(bot, chat_id: int, mid: int):
+    from telegram import Bot
+    return await Bot._do_post(bot, "deleteMessage", {"chat_id": chat_id, "message_id": mid})
 
 
 async def _delete_many(bot, chat_id: int, ids: list):
     """
-    Purani screen ke messages EK request mein delete (Telegram deleteMessages,
-    100 tak ek saath). Har message ki alag request se Telegram speed-limit
-    ("ruko 30 sec") laga deta tha — bot atak jaata aur delete chhoot jaate.
+    Messages EK request mein delete (100 tak). Error aaye to bot crash nahi hota —
+    log mein likhte hain aur baaki messages delete karte rehte hain.
     """
+    from telegram.error import RetryAfter
     for i in range(0, len(ids), 100):
         chunk = ids[i:i + 100]
-        try:
-            await bot._post("deleteMessages", {"chat_id": chat_id, "message_ids": chunk})
-            continue
-        except Exception as e:
-            logger.info(f"deleteMessages fail, ek-ek karke: {e}")
-        for mid in chunk:                       # purana tareeka — sirf bulk fail ho tab
+        for attempt in range(3):
             try:
-                await bot.delete_message(chat_id, mid)
-            except Exception:
-                pass
+                await _raw_delete(bot, chat_id, chunk)
+                logger.info(f"Chat clean: {len(chunk)} message delete ({chat_id})")
+                break
+            except RetryAfter as e:
+                wait = float(getattr(e, "retry_after", 3)) + 0.5
+                logger.warning(f"Chat clean: Telegram ne {wait:.0f}s rukne ko kaha ({chat_id}), phir try")
+                await asyncio.sleep(wait)                # sirf ye background kaam rukta hai, bot nahi
+            except Exception as e:
+                logger.warning(f"Chat clean: bulk delete fail ({chat_id}) {chunk}: {e} — ek-ek karke")
+                for mid in chunk:
+                    try:
+                        await _raw_delete_one(bot, chat_id, mid)
+                    except Exception as e1:
+                        # bahut purana / pehle hi delete / permission nahi — log karo, aage badho
+                        logger.warning(f"Chat clean: message {mid} delete nahi hua ({chat_id}): {e1}")
+                break
+        else:
+            logger.warning(f"Chat clean: {chunk} delete nahi ho paaye ({chat_id}) — Telegram limit")
 
 
-async def new_screen(context, bot, chat_id: int, user_msg_id: int = None):
+async def new_screen(context, bot, chat_id: int, user_msg_id: int = None, cmd: str = None):
     """
-    Naya command aaya — pichli screen ke saare messages (bot ke jawab + user ke
-    command) delete, aur naya group shuru. Sirf "screen" wale message jaate hain —
-    reports (payment, post report, task bana...) kabhi track nahi hote, wo rehte hain.
-
-    Delete BACKGROUND mein hota hai — naya jawab turant jaata hai, purani screen
-    uske saath-saath hat-ti hai. Telegram 48 ghante se purane message delete nahi karne deta.
+    Naya command aaya. Agar ye WAHI command hai jo pichli screen ka tha, aur beech
+    mein koi aur message (report wagaira) nahi aaya — to pichli screen (command +
+    bot ke jawab) delete. Warna kuch delete nahi, bas nayi screen shuru.
+    Delete background mein — naya jawab turant jaata hai.
     """
-    trail = _trail(context)
-    old = [m for g in trail[-KEEP_GROUPS:] for m in g]
-    if not old and _uid(context):
-        from storage import screen_ids_get     # restart ke baad memory khaali — DB se
-        old = await asyncio.get_running_loop().run_in_executor(None, screen_ids_get, _uid(context))
-    trail.clear()
-    trail.append([user_msg_id] if user_msg_id else [])
+    s = _screen(context)
+    if not s.get("loaded") and not s["ids"] and _uid(context):
+        from storage import screen_state_get    # restart ke baad memory khaali — DB se
+        saved = await asyncio.get_running_loop().run_in_executor(None, screen_state_get, _uid(context))
+        s.update(cmd=saved["cmd"], ids=saved["ids"], known=saved["known"])
+    s["loaded"] = True
+
+    old = []
+    if cmd and s.get("cmd") == cmd and _nothing_between(s, user_msg_id):
+        old = [m for m in dict.fromkeys(s["ids"]) if m != user_msg_id]
+
+    s["cmd"] = cmd
+    s["ids"] = []
+    _remember(s, user_msg_id)
     _save(context)
-    old = [m for m in dict.fromkeys(old) if m != user_msg_id]
     if old:
-        asyncio.get_running_loop().create_task(_delete_many(bot, chat_id, old))
+        _spawn(_delete_many(bot, chat_id, old))
 
 
 def track(context, msg):
-    """Ye message 'screen' ka hissa hai — agle command pe delete hoga."""
+    """Ye message abhi ki screen ka hissa hai (report NAHI) — agla same command ise hata sakta hai."""
     if msg is None or getattr(msg, "message_id", None) is None:
         return msg
-    trail = _trail(context)
-    if not trail:
-        trail.append([])
-    trail[-1].append(msg.message_id)
-    if len(trail[-1]) > 40:
-        trail[-1] = trail[-1][-40:]
+    s = _screen(context)
+    _remember(s, msg.message_id)
+    if len(s["ids"]) > 80:
+        s["ids"] = s["ids"][-80:]
     _save(context)
     return msg
 
 
-def track_id(context, message_id: int):
-    if message_id:
-        trail = _trail(context)
-        if not trail:
-            trail.append([])
-        trail[-1].append(message_id)
-        _save(context)
+def track_id(context, message_id: int, cmd: str = None):
+    """
+    Jaldi-jaldi aaya command jiska jawab skip hua (spam). Same command ho to abhi
+    ki screen mein jodo (agle wale ke saath hatega); alag command ho to sequence
+    toot gaya — uski nayi screen shuru (kuch delete nahi).
+    """
+    if not message_id:
+        return
+    s = _screen(context)
+    if cmd is not None and s.get("cmd") != cmd:
+        s["cmd"] = cmd
+        s["ids"] = []
+    _remember(s, message_id)
+    _save(context)
+
