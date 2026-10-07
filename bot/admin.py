@@ -80,12 +80,18 @@ def home_text() -> str:
     )
 
 
+def _pending_payouts() -> int:
+    import referral
+    return referral.count_pending_withdrawals()
+
+
 def home_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [btn("👥 Users", BLUE, callback_data="adm:u:all:0"),
          btn("💰 Payments", callback_data="adm:p")],
         [btn("🔍 User dhoondo", callback_data="adm:s"),
          btn("📣 Broadcast", callback_data="adm:bc")],
+        [btn(f"💸 Payout requests ({_pending_payouts()})", callback_data="adm:wd")],
         [btn("🧪 Amazon API test", callback_data="adm:api"),
          btn("🔄 Refresh", callback_data="adm:home")],
         [btn("🏠 Home", callback_data="home")],
@@ -152,6 +158,10 @@ def user_card(uid: int, seg: str = "all", page: int = 0):
     ]
     if u.get("bot_blocked"):
         lines.append("🚫 Bot ko block kiya hua hai")
+    import referral
+    ref_line = referral.admin_referral_line(uid)
+    if ref_line:
+        lines.append(ref_line)
     daily = "∞" if lim.get("key") == "admin" else lim["daily"]
     lines.append(f"\n📤 Posts: aaj {st['today']} (limit {daily}/task) | 7 din {st['week']} | total {st['total']}")
     lines.append(f"\n📋 <b>Tasks ({len(tasks)})</b>")
@@ -370,6 +380,17 @@ async def handle_admin_callback(query, context, uid: int, data: str) -> bool:
         n = len(list_user_ids(seg))
         await show(query, context, f"📣 Bhej raha hoon — {n} users. Poora hone pe summary aayegi.")
         context.application.create_task(_run_broadcast(context.application, uid, src[0], src[1], seg))
+        return True
+    if act == "wd":
+        import referral
+        rows_ = referral.list_pending_withdrawals()
+        if not rows_:
+            await query.answer("✅ Koi payout request pending nahi.", show_alert=True)
+            return True
+        await query.answer()
+        for row in rows_:
+            track(context, await query.message.reply_text(referral._admin_wd_text(row), parse_mode=ParseMode.HTML,
+                                                          reply_markup=referral._admin_wd_kb(row[0])))
         return True
     if act == "api":
         await query.answer("🔄 Amazon API test ho raha hai...")

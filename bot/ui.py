@@ -79,6 +79,18 @@ def _trail(context) -> list:
 
 
 _locks: dict = {}
+_arrivals: dict = {}
+
+
+def arrive(uid: int) -> int:
+    """Command aaya — iska number. Lock milne pe dekhte hain koi naya to nahi aa gaya."""
+    n = _arrivals.get(uid, 0) + 1
+    _arrivals[uid] = n
+    return n
+
+
+def is_latest(uid: int, n: int) -> bool:
+    return _arrivals.get(uid) == n
 
 
 def user_lock(uid: int) -> asyncio.Lock:
@@ -129,14 +141,23 @@ def _save(context):
 
 
 async def _delete_many(bot, chat_id: int, ids: list):
-    """Purani screen ke messages saath-saath delete (ek-ek ka intezaar nahi)."""
-    async def one(mid):
+    """
+    Purani screen ke messages EK request mein delete (Telegram deleteMessages,
+    100 tak ek saath). Har message ki alag request se Telegram speed-limit
+    ("ruko 30 sec") laga deta tha — bot atak jaata aur delete chhoot jaate.
+    """
+    for i in range(0, len(ids), 100):
+        chunk = ids[i:i + 100]
         try:
-            await bot.delete_message(chat_id, mid)
-        except Exception:
-            pass
-    for i in range(0, len(ids), 10):
-        await asyncio.gather(*(one(m) for m in ids[i:i + 10]))
+            await bot._post("deleteMessages", {"chat_id": chat_id, "message_ids": chunk})
+            continue
+        except Exception as e:
+            logger.info(f"deleteMessages fail, ek-ek karke: {e}")
+        for mid in chunk:                       # purana tareeka — sirf bulk fail ho tab
+            try:
+                await bot.delete_message(chat_id, mid)
+            except Exception:
+                pass
 
 
 async def new_screen(context, bot, chat_id: int, user_msg_id: int = None):

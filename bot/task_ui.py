@@ -352,17 +352,18 @@ def task_kb(uid: int, task: dict, lang: str) -> InlineKeyboardMarkup:
          btn("🔚 Footer", callback_data=f"t:{tid}:hf:footer")],
         [btn(f"♻️ Duplicate {_onoff(c.get('dup_check', True))}", callback_data=f"t:{tid}:dup"),
          btn(f"🔔 {tr(lang, 'Notification', 'Notification')}", callback_data=f"t:{tid}:silent")],
-        [btn(f"🔗 Search Links {_onoff(c.get('search_links'))}", callback_data=f"t:{tid}:search"),
-         btn(f"{_onoff(c.get('strip_promo', True))} 🚫 @User & TG Link", callback_data=f"t:{tid}:promo")],
     ]
-    ctl = []
-    if not (d and d["id"] == tid):
-        ctl.append(btn(tr(lang, "⭐ Make Default", "⭐ Default banayein"), callback_data=f"t:{tid}:def"))
+    # Pause / Resume chhota — Search Links ke bagal mein (2×2 jaisa)
     if task["paused"]:
-        ctl.append(btn(tr(lang, "▶️ Resume", "▶️ Chalu karein"), GREEN, callback_data=f"t:{tid}:resume"))
+        pause_btn = btn(tr(lang, "▶️ Resume", "▶️ Chalu karein"), GREEN, callback_data=f"t:{tid}:resume")
     else:
-        ctl.append(btn(tr(lang, "⏸️ Pause", "⏸️ Rokein"), callback_data=f"t:{tid}:pause"))
-    rows.append(ctl)
+        pause_btn = btn(tr(lang, "⏸️ Pause", "⏸️ Rokein"), callback_data=f"t:{tid}:pause")
+    rows.append([btn(f"🔗 Search Links {_onoff(c.get('search_links'))}", callback_data=f"t:{tid}:search"),
+                 pause_btn])
+    # Lamba naam — poori line, taaki text pura dikhe
+    rows.append([btn(f"{_onoff(c.get('strip_promo', True))} 🚫 @User & TG Link", callback_data=f"t:{tid}:promo")])
+    if not (d and d["id"] == tid):
+        rows.append([btn(tr(lang, "⭐ Make Default", "⭐ Default banayein"), callback_data=f"t:{tid}:def")])
     rows.append([btn(tr(lang, "✏️ Rename", "✏️ Naam badlein"), callback_data=f"t:{tid}:ren"),
                  btn(tr(lang, "🗑️ Delete", "🗑️ Delete"), RED, callback_data=f"t:{tid}:del")])
     rows.append([btn(tr(lang, "📋 All Tasks", "📋 Saare Tasks"), callback_data="tl"),
@@ -1227,3 +1228,94 @@ async def handle_task_input(update: Update, context, uid: int, action: str) -> b
         return True
 
     return False
+
+
+# =============================================================================
+# /config — task ki SAARI settings ek nazar mein
+# =============================================================================
+def config_text(uid: int, task: dict, lang: str) -> str:
+    from card import CARD_CHOICES, WM_POSITIONS, WM_SIZES, WM_COLORS
+    from database import posts_today
+    c = task["cfg"]
+    lim = limits(uid)
+    run = task["id"] in running_ids(uid)
+    d = default_task(uid)
+    on = lambda v: "✅" if v else "❌"      # noqa: E731
+    val = lambda v: f"<code>{esc(str(v))}</code>" if v else "❌"      # noqa: E731
+
+    state = tr(lang, "▶️ Running", "▶️ Chal raha hai") if run else tr(lang, "⏸️ Paused", "⏸️ Ruka hua")
+    star = "  ⭐ Default" if d and d["id"] == task["id"] else ""
+    cap = "∞" if lim.get("key") == "admin" else lim.get("daily", 0)
+
+    lines = [f"⚙️ <b>Config — {esc(tname(task, lang))}</b>  {state}{star}\n",
+             f"🏷️ Affiliate Tag: {val(c.get('tag'))}",
+             f"📥 Draft: {chan(c.get('source_title'), c.get('source_username'), '❌')}",
+             f"📢 Destination: {chan(c.get('channel_title'), c.get('channel_username'), '❌')}",
+             f"📤 {tr(lang, 'Today', 'Aaj')}: {posts_today(uid, task['id'])} / {cap}\n",
+             f"🛍️ Amazon posts: {on(c.get('allow_amazon', True))}",
+             f"📝 Non-Amazon posts: {on(c.get('allow_other', True))}",
+             f"♻️ Duplicate: {on(c.get('dup_check', True))}",
+             f"🚫 @User & TG Link: {on(c.get('strip_promo', True))}",
+             f"🔗 Search Links: {on(c.get('search_links'))}",
+             f"🔔 Notification: {'🔕 Silent' if c.get('silent', True) else '🔔 Loud'}\n"]
+
+    f = c.get("amz_fields", {})
+    if c.get("amz_detailed", True):
+        shown = ", ".join(FIELD_LABELS.get(k, k) for k in ["image", "link"] + FIELD_ORDER if f.get(k)) or "—"
+        lines.append(f"🛍️ Post Details: <b>DETAILED</b> — {esc(shown)}")
+    else:
+        lines.append(f"🛍️ Post Details: <b>MINIMAL</b> — " + tr(lang, "original caption", "original caption"))
+
+    card = c.get("card", {})
+    if not lim.get("card"):
+        lines.append("🎨 Image Card: 🔒 Pro")
+    elif card.get("enabled"):
+        pick = lambda k: CARD_CHOICES.get(k, {}).get(card.get(k), card.get(k) or "—")      # noqa: E731
+        lines.append(f"🎨 Image Card: ✅ — {esc(str(pick('theme')))}, {esc(str(pick('image_size')))}, "
+                     f"{esc(str(pick('font')))}")
+        lines.append(f"     Price {on(card.get('show_price'))}  MRP {on(card.get('show_mrp'))}  "
+                     f"Discount {on(card.get('show_discount'))}  Rating {on(card.get('show_rating'))}")
+    else:
+        lines.append("🎨 Image Card: ❌")
+
+    wm = c.get("watermark", {})
+    if wm.get("enabled") and (wm.get("text") or "").strip():
+        def nm(table, k):
+            v = table.get(k, k)
+            return v[0] if isinstance(v, tuple) else v
+        lines.append(f"💧 Watermark: ✅ {val(wm.get('text'))} — "
+                     f"{esc(str(nm(WM_POSITIONS, wm.get('position'))))}, "
+                     f"{esc(str(nm(WM_SIZES, wm.get('size'))))}, "
+                     f"{esc(str(nm(WM_COLORS, wm.get('color'))))}")
+    else:
+        lines.append("💧 Watermark: ❌")
+
+    for key, label in (("header", "🔝 Header"), ("footer", "🔚 Footer")):
+        h = c.get(key, {})
+        text = (h.get("text") or "").strip()
+        lines.append(f"{label}: ✅ {val(text[:60] + ('…' if len(text) > 60 else ''))}"
+                     if h.get("enabled") and text else f"{label}: ❌")
+
+    b = c.get("buttons", {})
+    lines.append("\n🎛️ <b>Buttons</b>")
+    for key in ("buy", "cart", "btn1", "btn2"):
+        x = b.get(key, {})
+        name = esc(x.get("label") or key)
+        link = f" → {esc(x.get('url'))}" if key in ("btn1", "btn2") and x.get("url") else ""
+        lines.append(f"   {on(x.get('enabled'))} {name}{link}")
+    return "\n".join(lines)
+
+
+def config_kb(uid: int, task: dict, lang: str) -> InlineKeyboardMarkup:
+    rows = [[btn(tr(lang, "✏️ Change settings", "✏️ Settings badlein"), BLUE, callback_data=f"t:{task['id']}")]]
+    others = [t for t in list_tasks(uid) if t["id"] != task["id"]]
+    pair = []
+    for t in others[:8]:
+        pair.append(btn(f"⚙️ {tname(t, lang)}", callback_data=f"cfg:{t['id']}"))
+        if len(pair) == 2:
+            rows.append(pair)
+            pair = []
+    if pair:
+        rows.append(pair)
+    rows.append([btn("🏠 Home", callback_data="home")])
+    return InlineKeyboardMarkup(rows)

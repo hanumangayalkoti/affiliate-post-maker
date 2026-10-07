@@ -234,8 +234,9 @@ def _parse_paid(payload: dict):
     return None
 
 
-async def after_paid(application, uid: int, tier: str, new_exp, how: str, amount_text: str, old_tier):
-    """Payment ke baad: user ko report, tasks ki limit, admin ko khabar."""
+async def after_paid(application, uid: int, tier: str, new_exp, how: str, amount_text: str, old_tier,
+                     amount_paise: int = 0, payment_ref: str = ""):
+    """Payment ke baad: user ko report, tasks ki limit, admin ko khabar, referrer ko commission."""
     from task_ui import enforce_task_limit
     lang = get_lang(uid)
     paused = enforce_task_limit(uid)
@@ -258,6 +259,13 @@ async def after_paid(application, uid: int, tier: str, new_exp, how: str, amount
     await notify_admins(application.bot,
                         f"💰 <b>Naya payment</b> ({how})\n👤 {who(uid)}\n"
                         f"💵 {esc(amount_text)} — {tier_label(tier)}{change}\n📅 Expiry: {fmt_date(new_exp)}")
+    # Referral commission — har payment pe (renewal bhi), ek payment pe ek hi baar
+    try:
+        import referral
+        await referral.on_payment(application.bot, uid, amount_paise or TIERS[tier]["inr"] * 100,
+                                  tier, how, payment_ref)
+    except Exception as e:
+        logger.error(f"Referral credit fail ({uid}): {e}")
 
 
 def build_web_app(application) -> web.Application:
@@ -289,7 +297,8 @@ def build_web_app(application) -> web.Application:
             return web.json_response({"status": "ignored"})
         uid, tier, days, new_exp, amount, old_tier = res
         try:
-            await after_paid(application, uid, tier, new_exp, "Razorpay", f"₹{amount // 100}", old_tier)
+            await after_paid(application, uid, tier, new_exp, "Razorpay", f"₹{amount // 100}", old_tier,
+                             amount_paise=amount, payment_ref=f"rzp:{receipt}")
         except Exception as e:
             logger.error(f"After-paid notify fail: {e}")
         return web.json_response({"status": "ok"})
@@ -369,7 +378,8 @@ async def handle_successful_payment(update: Update, context: ContextTypes.DEFAUL
     if res is not None:
         new_exp, old_tier = res
         await after_paid(context.application, uid, tier, new_exp, "Telegram Stars",
-                         f"{sp.total_amount}⭐", old_tier)
+                         f"{sp.total_amount}⭐", old_tier,
+                         amount_paise=TIERS[tier]["inr"] * 100, payment_ref=f"stars:{charge}")
         return
     if payment_exists("stars", charge):
         await msg.reply_text(tr(lang, "✅ This payment is already recorded. Check /plan.",

@@ -38,6 +38,7 @@ import billing
 import faq
 import gate
 import task_ui
+import referral
 from alerts import notify_admins, who
 from database import (
     cache_cleanup, post_log_cleanup, cleanup_old_entries, user_stats, posts_today, day_report_rows,
@@ -51,7 +52,7 @@ from storage import (
     LOCAL_TZ,
 )
 from tiers import TRIAL_DAYS, TIERS
-from ui import btn, tr, chan, new_screen, track, user_lock, GREEN, BLUE, TAGLINE
+from ui import btn, tr, chan, new_screen, track, track_id, user_lock, arrive, is_latest, GREEN, BLUE, TAGLINE
 from users import (
     ADMIN_IDS, OWNER_ID, is_admin, is_active, is_blocked, get_user, upsert_user, get_lang,
     set_lang, set_default_task, days_left, limits, start_trial, users_expiring_soon,
@@ -137,7 +138,9 @@ def home_kb(uid: int) -> InlineKeyboardMarkup:
     rows += [
         [btn(tr(lang, "📋 My Tasks", "📋 Mere Tasks"), callback_data="tl"),
          btn("💎 Plan", callback_data="open_plan")],
-        [btn("📊 Stats", callback_data="menu_stats"),
+        [btn("⚙️ Config", callback_data="cfg:"),
+         btn("📊 Stats", callback_data="menu_stats")],
+        [btn(tr(lang, "🎁 Refer & Earn", "🎁 Refer & Earn"), GREEN, callback_data="ref:home"),
          btn("❓ Help & FAQ", callback_data="menu_help")],
         [btn("🌐 Language", callback_data="menu_lang")],
     ]
@@ -153,19 +156,21 @@ def help_text(uid: int) -> str:
            "<b>Posting:</b>\n• Send me an Amazon link (several links in one message = separate posts)\n"
            "• Or put deals in your Draft channel — I'll pick them up\n• Non-Amazon posts work too\n\n"
            "<b>Commands:</b>\n🏠 /start — Home\n📋 /tasks — Your tasks & all settings\n"
-           "💎 /plan — Plans & payment\n📊 /stats — Your posts\n❓ /faq — Common questions\n"
-           "🌐 /language — Change language\n🧾 /paysupport — Payment help\n❌ /cancel — Stop the current step\n",
+           "⚙️ /config — See all settings of a task at a glance\n"
+           "📊 /stats — Your posts\n💎 /plan — Plans & payment\n🎁 /refer — Refer & Earn\n"
+           "❓ /faq — Common questions\n🌐 /language — Change language\n🧾 /paysupport — Payment help\n",
            f"📖 <b>{esc(BOT_NAME)} — Kaise use karein</b>\n\n"
            "<b>Post kaise karein:</b>\n• Mujhe Amazon link bhejein (ek message mein kai link = alag-alag post)\n"
            "• Ya apne Draft channel mein deal daalein — main khud utha lunga\n• Non-Amazon posts bhi chalti hain\n\n"
            "<b>Commands:</b>\n🏠 /start — Home\n📋 /tasks — Aapke tasks aur saari settings\n"
-           "💎 /plan — Plans aur payment\n📊 /stats — Aapki posts\n❓ /faq — Aam sawaal\n"
-           "🌐 /language — Bhasha badlein\n🧾 /paysupport — Payment mein madad\n❌ /cancel — Chalu kaam band\n")
+           "⚙️ /config — Task ki saari settings ek nazar mein\n"
+           "📊 /stats — Aapki posts\n💎 /plan — Plans aur payment\n🎁 /refer — Refer karke kamaayein\n"
+           "❓ /faq — Aam sawaal\n🌐 /language — Bhasha badlein\n🧾 /paysupport — Payment mein madad\n")
     s = billing.support_line(lang)
     if s:
         t += "\n" + s
     if is_admin(uid):
-        t += "\n\n👑 <b>Admin:</b> /admin — Panel  •  /user ID  •  /broadcast"
+        t += "\n\n👑 <b>Admin:</b> /admin — Panel  •  /user ID  •  /broadcast  •  /withdrawals"
     return t
 
 
@@ -269,8 +274,10 @@ ACTION_NAMES = {
     "adm_bc":      ("broadcast", "Broadcast"),
     "adm_days":    ("adding / reducing days", "Din jodna / kaatna"),
     "adm_msg":     ("messaging a user", "User ko message bhejna"),
+    "ref_pm":      ("setting the payout method", "Payout method set karna"),
 }
-_ACTION_KEYS = ("action", "tid", "bkey", "hf_kind", "adm_target", "adm_sign", "adm_back", "bc_src")
+_ACTION_KEYS = ("action", "tid", "bkey", "hf_kind", "adm_target", "adm_sign", "adm_back", "bc_src",
+                "ref_method")
 
 
 def _drop_pending(context) -> str:
@@ -294,7 +301,14 @@ def user_command(fn):
         uid = update.effective_user.id if update.effective_user else 0
         if not uid:
             return
+        n = arrive(uid)
         async with user_lock(uid):
+            if not is_latest(uid, n) and update.message:
+                # User ne jaldi-jaldi kai command bheje (jaise 30 baar /start) — sirf
+                # AAKHRI wala jawab dega. Ye wala skip, iska message agli screen ke
+                # saath delete hoga. Warna har ek ka jawab + Telegram speed-limit = minute bhar ki der.
+                track_id(context, update.message.message_id)
+                return
             await _user_command(fn, update, context)
     return wrapper
 
@@ -331,7 +345,11 @@ def admin_command(fn):
         u = update.effective_user
         if not u or not is_admin(u.id):
             return
+        n = arrive(u.id)
         async with user_lock(u.id):
+            if not is_latest(u.id, n):
+                track_id(context, update.message.message_id)
+                return
             await new_screen(context, context.bot, update.message.chat_id, update.message.message_id)
             prev = _drop_pending(context)
             if prev:
@@ -369,12 +387,35 @@ HOME_ROW = [btn("🏠 Home", callback_data="home")]
 
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE, uid: int):
+    if context.args:
+        await referral.handle_start_arg(context.bot, uid, context.args[0])
     await _send(update, context, home_text(uid, update.effective_user.first_name), home_kb(uid))
 
 
 async def cmd_tasks(update, context, uid):
     lang = get_lang(uid)
     await _send(update, context, task_ui.tasks_text(uid, lang), task_ui.tasks_kb(uid, lang))
+
+
+def _config_screen(uid: int, tid: int = None):
+    lang = get_lang(uid)
+    tasks = list_tasks(uid)
+    if not tasks:
+        return (tr(lang, "⚙️ You have no task yet. Create one in /tasks.",
+                   "⚙️ Abhi koi task nahi hai. /tasks mein banayein."),
+                InlineKeyboardMarkup([[btn(tr(lang, "📋 My Tasks", "📋 Mere Tasks"), callback_data="tl")]]))
+    task = next((t for t in tasks if t["id"] == tid), None) or task_ui.default_task(uid) or tasks[0]
+    return task_ui.config_text(uid, task, lang), task_ui.config_kb(uid, task, lang)
+
+
+async def cmd_config(update, context, uid):
+    text, kb = _config_screen(uid)
+    await _send(update, context, text, kb)
+
+
+async def cmd_refer(update, context, uid):
+    text, kb = await referral.refer_screen(context.bot, uid, get_lang(uid))
+    await _send(update, context, text, kb)
 
 
 async def cmd_help(update, context, uid):
@@ -440,6 +481,8 @@ async def handle_private(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop("action", None)
         action = None
     if action:
+        if await referral.handle_input(update, context, uid, action):
+            return
         if await admin.handle_admin_input(update, context, uid, action):
             return
         if await task_ui.handle_task_input(update, context, uid, action):
@@ -610,6 +653,11 @@ async def _route_callback(query, context, uid: int, data: str):
             context.user_data.pop(k, None)
         await show(query, context, home_text(uid, first), home_kb(uid))
         return
+    if data.startswith("cfg:"):
+        tid = data.split(":", 1)[1]
+        text, kb = _config_screen(uid, int(tid) if tid.isdigit() else None)
+        await show(query, context, text, kb)
+        return
     if data == "menu_help":
         await show(query, context, help_text(uid), help_kb(uid))
         return
@@ -630,6 +678,8 @@ async def _route_callback(query, context, uid: int, data: str):
         await show(query, context, faq.answer_text(lang, i), faq.answer_kb(lang, i))
         return
 
+    if await referral.handle_callback(query, context, uid, data):
+        return
     if await admin.handle_admin_callback(query, context, uid, data):
         return
     if await billing.handle_billing_callback(query, context, uid, data):
@@ -731,12 +781,15 @@ async def cleanup_job(context: ContextTypes.DEFAULT_TYPE):
 # =============================================================================
 # MAIN
 # =============================================================================
+# Menu mein wahi jo user baar-baar chalata hai — upar sabse zyada kaam wale.
+# /cancel menu mein nahi (kaam karta hai, bas dikhta nahi).
 USER_COMMANDS = [
-    ("start", "🏠 Home"), ("tasks", "📋 Tasks & Settings"), ("plan", "💎 Plans"),
-    ("stats", "📊 Stats"), ("faq", "❓ FAQ"), ("help", "📖 Help"),
-    ("language", "🌐 Language"), ("paysupport", "🧾 Payment Support"), ("cancel", "❌ Cancel"),
+    ("start", "🏠 Home"), ("tasks", "📋 Tasks & Settings"), ("config", "⚙️ All settings at a glance"),
+    ("stats", "📊 Today's posts"), ("plan", "💎 Plans & Renew"), ("refer", "🎁 Refer & Earn"),
+    ("faq", "❓ FAQ"), ("help", "📖 Help"), ("language", "🌐 Language"), ("paysupport", "🧾 Payment Support"),
 ]
-ADMIN_COMMANDS = [("admin", "👑 Admin panel"), ("user", "🔍 User detail"), ("broadcast", "📣 Broadcast")]
+ADMIN_COMMANDS = [("admin", "👑 Admin panel"), ("user", "🔍 User detail"), ("broadcast", "📣 Broadcast"),
+                  ("withdrawals", "💸 Payout requests")]
 
 
 def main():
@@ -746,6 +799,7 @@ def main():
         raise ValueError("ADMIN_ID environment variable set nahi hai ya galat hai!")
 
     init_db()
+    referral.init_tables()
     if not get_user(OWNER_ID):          # sirf pehli baar — warna har restart pe naam mit jaata
         upsert_user(OWNER_ID, "", "Admin")
 
@@ -788,13 +842,15 @@ def main():
 
     user_cmds = [
         ("start", cmd_start), ("menu", cmd_start), ("tasks", cmd_tasks), ("settings", cmd_tasks),
+        ("config", cmd_config), ("refer", cmd_refer), ("referral", cmd_refer),
         ("help", cmd_help), ("faq", cmd_faq), ("stats", cmd_stats), ("language", cmd_language),
         ("cancel", cmd_cancel), ("plan", billing.cmd_plan), ("paysupport", billing.cmd_paysupport),
     ]
     for name, fn in user_cmds:
         app.add_handler(CommandHandler(name, user_command(fn), filters=dm))
 
-    for name, fn in [("admin", admin.cmd_admin), ("user", admin.cmd_user), ("broadcast", admin.cmd_broadcast)]:
+    for name, fn in [("admin", admin.cmd_admin), ("user", admin.cmd_user), ("broadcast", admin.cmd_broadcast),
+                     ("withdrawals", referral.cmd_withdrawals)]:
         app.add_handler(CommandHandler(name, admin_command(fn), filters=dm))
 
     app.add_handler(CallbackQueryHandler(handle_callback))
