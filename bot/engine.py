@@ -1264,6 +1264,22 @@ async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str
             return
 
         # ── Sirf unknown / search Amazon links ────────────────────────────
+        # Offer / category / search page ka koi discount % nahi hota. Discount
+        # Filter ON hai to ye pass nahi maane jaate → skip.
+        if md:
+            await _edit_or_notify(
+                wait_msg, notify,
+                tr(lang,
+                   f"⏭️ <b>Skipped — no product in this post</b>\n"
+                   f"🔗 Only Amazon offer / category / search pages — they have no discount %.\n"
+                   f"📉 Discount Filter {md}%+ is ON, so not posted.\n"
+                   "<i>To post such deals, turn the Discount Filter OFF in /tasks.</i>",
+                   f"⏭️ <b>Skip — is post mein koi product nahi</b>\n"
+                   f"🔗 Sirf Amazon offer / category / search page hain — inka discount % nahi hota.\n"
+                   f"📉 Discount Filter {md}%+ ON hai, isliye post nahi ki.\n"
+                   "<i>Aisi deals bhi post karni hain to /tasks mein Discount Filter OFF karein.</i>"),
+                parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+            return
         cp, ce = remove_footer(raw_plain, raw_entities)
         cp, ce = _strip_if_on(cp, ce, cfg)
         cp, ce = await replace_amazon_links(cp, ce, amazon_urls, tag)

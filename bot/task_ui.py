@@ -642,6 +642,7 @@ def disc_text(task, lang):
               "<b>skipped</b> — not posted, no daily limit used.\n"
               "• Non-Amazon posts are never filtered here.\n"
               "• If Amazon gives no product details, the deal is skipped (you can send it again).\n"
+              "• Amazon offer / category / search pages (no product) are skipped too.\n"
               "• MINIMAL mode: posted if at least one product in the post passes.\n\n"
               "<i>Choose the minimum discount:</i>",
               f"📉 <b>Discount Filter</b> — {esc(tname(task, lang))}\n\n"
@@ -650,6 +651,7 @@ def disc_text(task, lang):
               "<b>skip</b> hogi — post nahi hogi, daily limit bhi nahi kategi.\n"
               "• Non-Amazon posts pe ye filter nahi lagta.\n"
               "• Amazon se product details na mile to deal skip hogi (dobara bhej sakte hain).\n"
+              "• Amazon offer / category / search page (bina product) bhi skip honge.\n"
               "• MINIMAL mode: post ka koi bhi ek product pass kare to post hogi.\n\n"
               "<i>Kam se kam kitna discount chahiye, chunein:</i>")
 
