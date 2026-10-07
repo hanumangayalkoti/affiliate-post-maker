@@ -514,8 +514,14 @@ def amz_text(task, lang):
                   f"Mode: <b>✅ DETAILED</b>\n\n<b>Shown in the post:</b> {esc(', '.join(on_list)) or '—'}",
                   f"Mode: <b>✅ DETAILED</b>\n\n<b>Post mein dikhega:</b> {esc(', '.join(on_list)) or '—'}")
     else:
-        body = tr(lang, "Mode: <b>MINIMAL</b> — only price + link, no photo.",
-                  "Mode: <b>MINIMAL</b> — sirf price + link, photo nahi.")
+        body = tr(lang, "Mode: <b>MINIMAL</b> — the <b>original caption</b> is posted as it is "
+                        "(\"Loot Free\", \"Apply Coupon\"…). Amazon links get your tag; other channels' "
+                        "@usernames and Telegram links are removed. Photo: Image Card (if ON), else the "
+                        "Amazon photo, else the original photo.",
+                  "Mode: <b>MINIMAL</b> — <b>original caption</b> jaisa hai waisa jaata hai "
+                  "(\"Loot Free\", \"Apply Coupon\"…). Amazon links pe aapka tag, doosre channel ke "
+                  "@username aur Telegram links hat jaate hain. Photo: Image Card (ON ho to), warna "
+                  "Amazon ki photo, warna original photo.")
     return tr(lang,
               f"🛍️ <b>Post Details</b> — {esc(tname(task, lang))}\n\n{body}\n\n"
               "<i>What Amazon posts show in the caption. Tap a field to turn it ON/OFF.</i>",
