@@ -1,5 +1,5 @@
 """
-faq.py — 15 aam sawaal (English + Hinglish). Help → FAQ mein number buttons.
+faq.py — 16 aam sawaal (English + Hinglish). Help → FAQ mein number buttons.
 Callback:  faq  |  faq:<n>
 """
 from telegram import InlineKeyboardMarkup
@@ -101,6 +101,16 @@ def _faqs(lang):
             "Aapke plan mein roz kitni post ho sakti hain (/plan dekhein). Ye limit HAR TASK ki alag hai — "
             "jaise Pro (500) mein 2 task hain to dono task roz 500-500 post kar sakte hain. Har raat 12 baje "
             "(IST) reset hoti hai.")),
+        (tr(lang, "How does Refer & Earn work?", "Refer & Earn kaise kaam karta hai?"),
+         tr(lang,
+            "Open /refer and share your link. Whenever someone who joined with it pays — first time and every "
+            "renewal — you get a commission of that payment. Once your balance reaches the minimum, tap "
+            "💸 Withdraw (UPI / USDT / Stars / Telegram Wallet). /refer also shows every referral and your "
+            "payout history.",
+            "/refer kholein aur apna link share karein. Us link se juda koi bhi jab payment kare — pehli baar "
+            "aur har renewal pe — aapko us payment ka commission milta hai. Balance minimum tak pahunche to "
+            "💸 Withdraw dabayein (UPI / USDT / Stars / Telegram Wallet). /refer mein har referral aur payout "
+            "history bhi dikhti hai.")),
         (tr(lang, "What happens if I upgrade or downgrade?", "Plan upgrade/downgrade karne pe kya hoga?"),
          tr(lang,
             "The value of your remaining days is added to the new plan — nothing is lost. On a smaller "

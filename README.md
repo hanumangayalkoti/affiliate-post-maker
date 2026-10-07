@@ -37,7 +37,8 @@ Hinglish dono mein, "aap" wali izzat ke saath.
   size (Small / Medium / Large), rang
 - **Chat clean:** naya command aane pe pichle commands aur unke jawab delete.
   Reports (payment, task bana, post report) kabhi delete nahi
-- **FAQ:** 15 aam sawaal, number buttons se
+- **FAQ:** 16 aam sawaal, number buttons se
+- **🎁 Refer & Earn:** /refer — har referral ke har payment pe commission (REFERRAL_PERCENT, default 20%), MIN_WITHDRAW (default ₹500) pe UPI / USDT / Stars / Wallet payout; admin /withdrawals se Paid / Reject
 - **Admin panel (inline):** users ki list (filter + pages + 1-10 number), user
   card (plan, tasks, din jodo/kaato, tier badlo, block, message), payments,
   broadcast, Amazon API test. Admin ko har zaroori cheez ki khabar
