@@ -23,17 +23,17 @@ TIERS = {
     "basic": {
         "name": "Basic", "emoji": "🥉",
         "inr": _env_int("PRICE_BASIC", 50), "stars": _env_int("STARS_BASIC", 50),
-        "tasks": 1, "daily": _env_int("DAILY_BASIC", 200), "card": False,
+        "tasks": 1, "daily": _env_int("DAILY_BASIC", 500), "card": False,
     },
     "pro": {
         "name": "Pro", "emoji": "🥈",
         "inr": _env_int("PRICE_PRO", 100), "stars": _env_int("STARS_PRO", 100),
-        "tasks": 2, "daily": _env_int("DAILY_PRO", 500), "card": True,
+        "tasks": 2, "daily": _env_int("DAILY_PRO", 1500), "card": True,
     },
     "premium": {
         "name": "Premium", "emoji": "🥇",
         "inr": _env_int("PRICE_PREMIUM", 250), "stars": _env_int("STARS_PREMIUM", 250),
-        "tasks": 5, "daily": _env_int("DAILY_PREMIUM", 1200), "card": True,
+        "tasks": 5, "daily": _env_int("DAILY_PREMIUM", 5000), "card": True,
     },
 }
 TIER_ORDER = ["basic", "pro", "premium"]

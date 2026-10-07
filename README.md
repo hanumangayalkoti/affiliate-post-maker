@@ -12,7 +12,7 @@ Hinglish dono mein, "aap" wali izzat ke saath.
 |---|---|---|---|
 | Price / 30 din | ₹50 | ₹100 | ₹250 |
 | Tasks | 1 | 2 | 5 |
-| Posts / din (har task) | 200 | 500 | 1200 |
+| Posts / din (har task) | 500 | 1500 | 5000 |
 | Image Card | ❌ | ✅ | ✅ |
 
 - Naye user ko **7 din Pro free** (ek hi baar)
@@ -62,7 +62,7 @@ Hinglish dono mein, "aap" wali izzat ke saath.
 | STARS_ENABLED | ❌ | default true |
 | PRICE_BASIC / PRO / PREMIUM | ❌ | default 50 / 100 / 250 |
 | STARS_BASIC / PRO / PREMIUM | ❌ | default 50 / 100 / 250 |
-| DAILY_BASIC / PRO / PREMIUM | ❌ | default 200 / 500 / 1200 |
+| DAILY_BASIC / PRO / PREMIUM | ❌ | default 500 / 1500 / 5000 |
 | PLAN_DAYS / TRIAL_DAYS | ❌ | default 30 / 7 |
 | ADMIN_IDS | ❌ | Aur admins, comma se |
 | BOT_NAME / SUPPORT_USERNAME | ❌ | |
