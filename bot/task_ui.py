@@ -14,7 +14,10 @@ import re
 import html as html_lib
 import logging
 
-from telegram import InlineKeyboardMarkup, Update
+from telegram import (
+    InlineKeyboardMarkup, Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton,
+    KeyboardButtonRequestChat, ChatAdministratorRights,
+)
 from telegram.constants import ParseMode
 
 from alerts import notify_task_event
@@ -194,6 +197,80 @@ async def verify_channel(bot, ident, uid: int, need_post: bool, lang: str):
         return None, tr(lang, "You are not an admin of this channel — you can only add your own channel.",
                         "Aap is channel ke admin nahi hain — sirf apna channel jod sakte hain.")
     return chat, None
+
+
+# Telegram ka apna "channel chunein" button — private channel bhi, bina forward / ID ke.
+PICK_DEST, PICK_SRC = 1, 2
+
+
+def _rights(post: bool) -> ChatAdministratorRights:
+    return ChatAdministratorRights(False, False, False, False, False, False, False, False,
+                                   can_post_messages=post)
+
+
+def picker_kb(kind: str, lang: str) -> ReplyKeyboardMarkup:
+    label = (tr(lang, "📢 Choose Channel", "📢 Channel chunein") if kind == "dest"
+             else tr(lang, "📥 Choose Channel", "📥 Channel chunein"))
+    req = KeyboardButtonRequestChat(
+        request_id=PICK_DEST if kind == "dest" else PICK_SRC,
+        chat_is_channel=True,
+        user_administrator_rights=_rights(True),     # user khud admin ho (apna hi channel)
+        bot_administrator_rights=_rights(True),      # bot admin na ho to Telegram add karwata hai
+    )
+    return ReplyKeyboardMarkup([[KeyboardButton(label, request_chat=req)]], resize_keyboard=True,
+                               one_time_keyboard=True)
+
+
+async def show_picker(context, message, kind: str, lang: str):
+    m = await message.reply_text(
+        tr(lang, "👇 Tap the button below and pick your channel.", "👇 Neeche button dabake apna channel chunein."),
+        reply_markup=picker_kb(kind, lang))
+    context.user_data["picker_on"] = True
+    track(context, m)
+
+
+async def drop_picker(context, bot, chat_id: int):
+    """Neeche wala 'Channel chunein' keyboard hatao (agar dikh raha ho)."""
+    if not context.user_data.pop("picker_on", False):
+        return
+    try:
+        m = await bot.send_message(chat_id, "⌨️", reply_markup=ReplyKeyboardRemove())
+        await m.delete()
+    except Exception:
+        pass
+
+
+async def handle_chat_shared(update: Update, context):
+    """User ne 'Channel chunein' se channel chuna."""
+    msg = update.message
+    shared = getattr(msg, "chat_shared", None)
+    if not shared or not update.effective_user:
+        return
+    uid = update.effective_user.id
+    lang = get_lang(uid)
+    action = context.user_data.get("action")
+    tid = context.user_data.get("tid")
+    kind = "dest" if shared.request_id == PICK_DEST else "src"
+    context.user_data.pop("picker_on", None)
+    track(context, msg)
+    if action not in ("t_dest", "t_src") or not tid or not get_task(tid, uid):
+        m = await msg.reply_text(tr(lang, "⚠️ Open the task in /tasks first, then choose the channel.",
+                                    "⚠️ Pehle /tasks mein task kholein, phir channel chunein."),
+                                 reply_markup=ReplyKeyboardRemove())
+        track(context, m)
+        return
+    ok, out = await set_task_channel(context.bot, uid, tid, shared.chat_id, kind, lang)
+    if ok:
+        context.user_data.pop("action", None)
+        await msg.reply_text(out, parse_mode=ParseMode.HTML, reply_markup=ReplyKeyboardRemove())  # report
+        task = get_task(tid, uid)
+        m = await msg.reply_text(task_text(uid, task, lang), parse_mode=ParseMode.HTML,
+                                 reply_markup=task_kb(uid, task, lang), disable_web_page_preview=True)
+        track(context, m)
+    else:
+        m = await msg.reply_text(out, parse_mode=ParseMode.HTML, reply_markup=picker_kb(kind, lang))
+        context.user_data["picker_on"] = True
+        track(context, m)
 
 
 async def set_task_channel(bot, uid: int, tid: int, ident, kind: str, lang: str):
@@ -399,24 +476,31 @@ def chan_text(task, kind, lang):
         return tr(lang,
                   f"📢 <b>Destination</b> — {esc(tname(task, lang))}\n\nCurrent: {cur}\n\n"
                   "The channel where this task <b>posts the deals</b>.\n\n"
-                  "<b>How to set:</b>\n1️⃣ Make the bot an <b>admin</b> in your channel ('Post Messages' ON)\n"
-                  "2️⃣ Send the channel's <b>@username</b> here, or <b>forward</b> any post from it",
+                  "<b>How to set (easiest):</b>\n👇 Tap <b>📢 Choose Channel</b> at the bottom and pick your "
+                  "channel — <b>private channels work too</b>. If the bot isn't an admin yet, Telegram will "
+                  "ask you to add it.\n\n"
+                  "<i>Or send the channel's @username, or forward a post from it. "
+                  "(Invite links like t.me/+… can't be used.)</i>",
                   f"📢 <b>Destination</b> — {esc(tname(task, lang))}\n\nAbhi: {cur}\n\n"
                   "Wo channel jahan ye task <b>deals post karega</b>.\n\n"
-                  "<b>Kaise set karein:</b>\n1️⃣ Bot ko apne channel mein <b>admin</b> banayein ('Post Messages' ON)\n"
-                  "2️⃣ Channel ka <b>@username</b> yahan bhejein, ya channel ka koi post <b>forward</b> karein")
+                  "<b>Kaise set karein (sabse aasaan):</b>\n👇 Neeche <b>📢 Channel chunein</b> dabayein aur apna "
+                  "channel chunein — <b>private channel bhi chalega</b>. Bot admin na ho to Telegram khud "
+                  "admin banane ka option dega.\n\n"
+                  "<i>Ya channel ka @username bhejein, ya uska koi post forward karein. "
+                  "(t.me/+… wale invite link se nahi hota.)</i>")
     cur = chan(c.get("source_title"), c.get("source_username"), tr(lang, "not set", "set nahi"))
     return tr(lang,
               f"📥 <b>Draft</b> — {esc(tname(task, lang))}\n\nCurrent: {cur}\n\n"
               "A channel where <b>you put deals</b> — the bot picks them up and posts them to the "
               "Destination with your tag. (Optional — you can also just send deals to the bot in DM.)\n\n"
-              "<b>How to set:</b> make the bot an admin there, then send its <b>@username</b> or "
-              "<b>forward</b> a post from it.",
+              "<b>How to set (easiest):</b> 👇 tap <b>📥 Choose Channel</b> at the bottom and pick it — "
+              "<b>private channels work too</b>.\n<i>Or send its @username, or forward a post from it.</i>",
               f"📥 <b>Draft</b> — {esc(tname(task, lang))}\n\nAbhi: {cur}\n\n"
               "Wo channel jisme <b>aap deals daalte hain</b> — bot wahan se utha ke aapke tag ke saath "
               "Destination pe post karta hai. (Optional — bot ko DM mein bhi deal bhej sakte hain.)\n\n"
-              "<b>Kaise set karein:</b> bot ko wahan admin banayein, phir uska <b>@username</b> bhejein "
-              "ya koi post <b>forward</b> karein.")
+              "<b>Kaise set karein (sabse aasaan):</b> 👇 neeche <b>📥 Channel chunein</b> dabayein aur "
+              "channel chunein — <b>private channel bhi chalega</b>.\n<i>Ya uska @username bhejein, ya koi "
+              "post forward karein.</i>")
 
 
 def chan_kb(task, kind, lang):
@@ -910,6 +994,7 @@ async def handle_task_callback(query, context, uid: int, data: str) -> bool:
     if act in ("dest", "src"):
         _ask(context, "t_dest" if act == "dest" else "t_src", tid)
         await show(query, context, chan_text(task, act, lang), chan_kb(task, act, lang))
+        await show_picker(context, query.message, act, lang)
         return True
     if act == "src_off":
         cfg.update(source_channel="", source_title="", source_username="")
@@ -1232,15 +1317,26 @@ async def handle_task_input(update: Update, context, uid: int, action: str) -> b
     if action in ("t_dest", "t_src"):
         ident = channel_from_message(msg) or normalize_channel_ident(text)
         if not ident:
-            await reply(tr(lang, "⚠️ I couldn't read the channel.\nSend its <b>@username</b> or <b>forward</b> a post "
-                                 "from it. <i>(Private channel? Use forward.)</i>",
-                           "⚠️ Channel samajh nahi aaya.\nChannel ka <b>@username</b> bhejein ya uska koi post "
-                           "<b>forward</b> karein. <i>(Private channel ho to forward karein.)</i>"))
+            kind = "dest" if action == "t_dest" else "src"
+            if "t.me/+" in text or "joinchat" in text:
+                t = tr(lang, "⚠️ Invite links (t.me/+…) can't be used to find a channel.\n"
+                             "👇 Tap <b>Choose Channel</b> below and pick it — private channels work.",
+                       "⚠️ Invite link (t.me/+…) se channel nahi milta.\n"
+                       "👇 Neeche <b>Channel chunein</b> dabake channel chunein — private channel bhi chalega.")
+            else:
+                t = tr(lang, "⚠️ I couldn't read the channel.\n👇 Tap <b>Choose Channel</b> below and pick it, "
+                             "or send its @username.",
+                       "⚠️ Channel samajh nahi aaya.\n👇 Neeche <b>Channel chunein</b> dabake chunein, "
+                       "ya channel ka @username bhejein.")
+            m = await msg.reply_text(t, parse_mode=ParseMode.HTML, reply_markup=picker_kb(kind, lang))
+            context.user_data["picker_on"] = True
+            track(context, m)
             return True
         ok, out = await set_task_channel(context.bot, uid, tid, ident, "dest" if action == "t_dest" else "src", lang)
         if ok:
             context.user_data.pop("action", None)
-            await msg.reply_text(out, parse_mode=ParseMode.HTML)        # report — delete nahi
+            context.user_data.pop("picker_on", None)
+            await msg.reply_text(out, parse_mode=ParseMode.HTML, reply_markup=ReplyKeyboardRemove())  # report
             task = get_task(tid, uid)
             await reply(task_text(uid, task, lang), task_kb(uid, task, lang))
         else:

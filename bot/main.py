@@ -342,6 +342,7 @@ async def _user_command(fn, update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Referral start fail ({uid}): {e}")
     await new_screen(context, context.bot, msg.chat_id, msg.message_id, command_name(msg.text))
+    await task_ui.drop_picker(context, context.bot, msg.chat_id)     # 'Channel chunein' keyboard hatao
     prev = _drop_pending(context)
     if prev and fn is cmd_cancel:
         context.user_data["_cancelled"] = prev
@@ -598,6 +599,9 @@ async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TY
             c = t["cfg"]
             if chat_matches(chat, c.get("channel")) or chat_matches(chat, c.get("source_channel")):
                 return
+        # User abhi 'Channel chunein' se hi channel jod raha hai — alag se mat poocho
+        if (context.application.user_data.get(adder) or {}).get("action") in ("t_dest", "t_src"):
+            return
         await task_ui.channel_added_prompt(context.bot, adder, chat,
                                            bool(getattr(new, "can_post_messages", False)))
         return
@@ -644,6 +648,8 @@ async def _route_callback(query, context, uid: int, data: str):
         return
     show = task_ui.show
     first = query.from_user.first_name
+    if not (data.endswith(":dest") or data.endswith(":src")):
+        await task_ui.drop_picker(context, context.bot, query.message.chat_id)
 
     # ── Language ─────────────────────────────────────────────────────────
     if data.startswith("lang:"):
@@ -880,6 +886,7 @@ def main():
 
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(ChatMemberHandler(handle_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
+    app.add_handler(MessageHandler(filters.StatusUpdate.CHAT_SHARED & dm, task_ui.handle_chat_shared))
     app.add_handler(MessageHandler(
         filters.UpdateType.MESSAGE & dm & ~filters.COMMAND & ~filters.SUCCESSFUL_PAYMENT,
         handle_private))
