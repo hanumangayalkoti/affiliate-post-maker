@@ -19,7 +19,7 @@ from telegram.error import RetryAfter, TimedOut, NetworkError, Forbidden, BadReq
 from amazon_api import (
     is_amazon_url, is_amazon_search_url, resolve_amazon_url,
     extract_asin, get_products_by_asins,
-    make_affiliate_url, make_cart_url, get_short_affiliate_link, display_link,
+    make_affiliate_url, make_cart_url, get_short_affiliate_link, display_link, fetch_error,
     is_known_amazon, find_amazon_behind_many,
 )
 from caption import build_amazon_caption, wrap_plain_post, FIELD_LABELS
@@ -716,6 +716,30 @@ def _own_handles(cfg: dict) -> tuple:
     return tuple(h for h in (cfg.get("channel_username"), cfg.get("source_username")) if h)
 
 
+_NODATA_REASONS = {
+    "busy":           ("Amazon API was busy (too many requests) — tried twice.",
+                       "Amazon API busy tha (bahut requests) — 2 baar try kiya."),
+    "server":         ("Amazon server error — tried twice.",
+                       "Amazon server mein error — 2 baar try kiya."),
+    "network":        ("Could not reach Amazon (network/timeout) — tried twice.",
+                       "Amazon tak connection nahi hua (network/timeout) — 2 baar try kiya."),
+    "auth":           ("Amazon API login (token) failed — admin should check the API keys.",
+                       "Amazon API login (token) fail — admin API keys check kare."),
+    "not_accessible": ("Amazon does not share this product's data through the API.",
+                       "Amazon is product ka data API se nahi deta."),
+    "invalid":        ("Amazon says this product is invalid / not available.",
+                       "Amazon ke hisaab se ye product galat ya band hai."),
+    "empty":          ("Amazon returned no data for this product.",
+                       "Amazon ne is product ka koi data nahi bheja."),
+}
+
+
+def _nodata_reason(lang: str, asin: str) -> str:
+    """Draft reply ke liye: details kyun nahi mili (ek line, '' agar pata nahi)."""
+    r = _NODATA_REASONS.get(fetch_error(asin))
+    return ("\n🔎 " + tr(lang, r[0], r[1])) if r else ""
+
+
 async def post_amazon_original(context, uid: int, task: dict, msg, raw_plain: str, raw_entities: list,
                                amazon_urls: list, products: list, live: list, lang: str = "hi"):
     """
@@ -1068,6 +1092,10 @@ async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str
                           "✅ <b>Original caption ke saath post ho gaya!</b>")
                 if n:
                     text += f"\n🖼️ {esc(n)}"
+                if not live:
+                    text += tr(lang, "\n⚠️ Amazon didn't return product details.",
+                               "\n⚠️ Amazon se product details nahi mili.")
+                    text += _nodata_reason(lang, products[0]["asin"])
                 text += footer
             elif status == "duplicate":
                 text = tr(lang, f"♻️ <b>Already posted</b> ({esc(detail)} ago) — skipped.",
@@ -1150,7 +1178,8 @@ async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str
                            "✅ <b>Posted!</b>\n⚠️ Amazon didn't return product details — sent your "
                            "original text with your affiliate link.",
                            "✅ <b>Post ho gaya!</b>\n⚠️ Amazon se product details nahi mili — aapka "
-                           "original text aapke affiliate link ke saath bheja.") + footer,
+                           "original text aapke affiliate link ke saath bheja.")
+                        + _nodata_reason(lang, asin) + footer,
                         parse_mode=ParseMode.HTML, disable_web_page_preview=True)
                 except Exception as e:
                     release_posted(uid, task["id"], fb_key)
@@ -1177,7 +1206,8 @@ async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str
                                 f"\n♻️ {len(dupes)} pichle 24 ghante mein post ho chuki (skip)"))
             if nodata:
                 lines.append(tr(lang, f"⚠️ Amazon returned no data for {len(nodata)}",
-                                f"⚠️ {len(nodata)} ka data Amazon se nahi mila"))
+                                f"⚠️ {len(nodata)} ka data Amazon se nahi mila")
+                             + _nodata_reason(lang, nodata[0]))
             if errors:
                 lines.append(f"❌ {len(errors)} — {esc(errors[0])}")
             if low:
