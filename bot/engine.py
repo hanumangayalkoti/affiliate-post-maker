@@ -688,6 +688,13 @@ async def post_amazon_product(context, uid: int, task: dict, product: dict, lang
         return "error", _friendly_error(e, lang), ""
 
 
+def _strip_if_on(text: str, entities: list, cfg: dict):
+    """Task mein "🚫 @User & TG Link" ON ho (default) tabhi promo hatao."""
+    if not cfg.get("strip_promo", True):
+        return text, list(entities or [])
+    return strip_promo(text, entities, _own_handles(cfg))
+
+
 def _own_handles(cfg: dict) -> tuple:
     """Task ke apne channels — inke @username / t.me link post mein reh sakte hain."""
     return tuple(h for h in (cfg.get("channel_username"), cfg.get("source_username")) if h)
@@ -715,7 +722,7 @@ async def post_amazon_original(context, uid: int, task: dict, msg, raw_plain: st
 
     cp, ce = remove_footer(raw_plain, raw_entities)
     cp, ce = await replace_amazon_links(cp, ce, amazon_urls, tag)
-    cp, ce = strip_promo(cp, ce, _own_handles(cfg))
+    cp, ce = _strip_if_on(cp, ce, cfg)
     body = entities_to_html(cp, ce) if cp.strip() else ""
 
     best = live[0] if live else None
@@ -1073,7 +1080,7 @@ async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str
                                               parse_mode=ParseMode.HTML)
                         return
                 cp, ce = remove_footer(raw_plain, raw_entities)
-                cp, ce = strip_promo(cp, ce, _own_handles(cfg))
+                cp, ce = _strip_if_on(cp, ce, cfg)
                 cp, ce = await replace_amazon_links(cp, ce, amazon_urls, tag)
                 body   = entities_to_html(cp, ce)
                 try:
@@ -1132,7 +1139,7 @@ async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str
 
         # ── Sirf unknown / search Amazon links ────────────────────────────
         cp, ce = remove_footer(raw_plain, raw_entities)
-        cp, ce = strip_promo(cp, ce, _own_handles(cfg))
+        cp, ce = _strip_if_on(cp, ce, cfg)
         cp, ce = await replace_amazon_links(cp, ce, amazon_urls, tag)
         payload = _msg_payload(msg, cp, ce)
         status, detail = await post_other(context, uid, task, payload, lang)
@@ -1144,7 +1151,7 @@ async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str
     # ==========================================================================
     cp, ce  = remove_footer(raw_plain, raw_entities)
     # Doosre channel ka @username / Telegram link hatao (Flipkart, Myntra... sab posts)
-    cp, ce  = strip_promo(cp, ce, _own_handles(cfg))
+    cp, ce  = _strip_if_on(cp, ce, cfg)
     payload = _msg_payload(msg, cp, ce)
     status, detail = await post_other(context, uid, task, payload, lang)
     await _report_other(None, notify, status, detail, lang, footer_plain)

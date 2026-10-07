@@ -7,6 +7,7 @@ ui.py — chhote UI helpers:
                  Reports (payment, task bana, post report) kabhi track nahi hote,
                  isliye kabhi delete nahi hote.
 """
+import asyncio
 import html as html_lib
 import logging
 
@@ -77,21 +78,54 @@ def _trail(context) -> list:
     return tr_
 
 
+_locks: dict = {}
+
+
+def user_lock(uid: int) -> asyncio.Lock:
+    """Ek user ke commands ek-ek karke chalein. Do baar /start jaldi dabaya to dono
+    saath chal ke ek doosre ki screen nahi bigaadte — doosra pehle wale ko saaf karta hai."""
+    lock = _locks.get(uid)
+    if lock is None:
+        if len(_locks) > 20000:
+            _locks.clear()
+        lock = _locks[uid] = asyncio.Lock()
+    return lock
+
+
+def _uid(context):
+    return getattr(context, "_user_id", None)
+
+
+def _save(context):
+    """Screen ke message IDs DB mein — bot restart ho tab bhi agla command purani screen saaf kare."""
+    uid = _uid(context)
+    if uid:
+        from storage import screen_ids_set
+        screen_ids_set(uid, [m for g in _trail(context) for m in g])
+
+
 async def new_screen(context, bot, chat_id: int, user_msg_id: int = None):
     """
-    Naya command aaya — pichle (max 3) commands ke saare messages delete,
-    aur naya group shuru. Telegram 48 ghante se purane message delete nahi karne deta.
+    Naya command aaya — pichli screen ke saare messages (bot ke jawab + user ke
+    command) delete, aur naya group shuru. Sirf "screen" wale message jaate hain —
+    reports (payment, post report, task bana...) kabhi track nahi hote, wo rehte hain.
+    Telegram 48 ghante se purane message delete nahi karne deta.
     """
     trail = _trail(context)
-    old = trail[-KEEP_GROUPS:]
+    old = [m for g in trail[-KEEP_GROUPS:] for m in g]
+    if not old and _uid(context):
+        from storage import screen_ids_get
+        old = screen_ids_get(_uid(context))     # restart ke baad memory khaali — DB se
     trail.clear()
-    for group in old:
-        for mid in group:
-            try:
-                await bot.delete_message(chat_id, mid)
-            except Exception:
-                pass
     trail.append([user_msg_id] if user_msg_id else [])
+    _save(context)
+    for mid in dict.fromkeys(old):
+        if mid == user_msg_id:
+            continue
+        try:
+            await bot.delete_message(chat_id, mid)
+        except Exception:
+            pass
 
 
 def track(context, msg):
@@ -104,6 +138,7 @@ def track(context, msg):
     trail[-1].append(msg.message_id)
     if len(trail[-1]) > 40:
         trail[-1] = trail[-1][-40:]
+    _save(context)
     return msg
 
 
@@ -113,3 +148,4 @@ def track_id(context, message_id: int):
         if not trail:
             trail.append([])
         trail[-1].append(message_id)
+        _save(context)
