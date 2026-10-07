@@ -610,17 +610,20 @@ async def deliver(send_fn, kwargs: dict, photo_bytes: bytes = None, photo_name: 
 async def make_post_image(raw: bytes, product: dict, cfg: dict, allow_card: bool = True):
     """
     Amazon photo → post wali photo. Card ON (aur plan mein allowed) hai to card
-    (watermark andar hi), warna seedhi photo + watermark. Returns (bytes, card_bana?).
-    Pillow ka kaam alag thread mein — bot baaki users ke liye ruke nahi.
+    (watermark + Amazon badge andar hi), warna seedhi photo + watermark + badge.
+    Returns (bytes, card_bana?). Pillow ka kaam alag thread mein — bot baaki
+    users ke liye ruke nahi.
     """
     card_cfg = cfg.get("card") or {}
     wm = cfg.get("watermark", {})
+    badge = bool(cfg.get("amazon_badge", True))
     if allow_card and card_cfg.get("enabled"):
-        out = await asyncio.to_thread(render_card, raw, product, card_cfg, wm)
+        out = await asyncio.to_thread(render_card, raw, product, card_cfg, wm, badge)
         if out:
             return out, True
-    if wm.get("enabled") and (wm.get("text") or "").strip():
-        out = await asyncio.to_thread(apply_watermark, raw, wm, card_cfg.get("font", "poppins"))
+    if _wm_on(cfg) or badge:
+        out = await asyncio.to_thread(apply_watermark, raw, wm if _wm_on(cfg) else {},
+                                      card_cfg.get("font", "poppins"), badge)
         return out, False
     return raw, False
 

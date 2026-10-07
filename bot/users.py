@@ -282,7 +282,7 @@ def set_tier(user_id: int, tier: str) -> bool:
                 if not row:
                     return False
                 exp = row[0]
-                if not exp or exp <= utcnow():
+                if not exp or exp <= utcnow() + timedelta(minutes=1):   # khatam ya bas khatam hone wala
                     exp = midnight_ceil(utcnow() + timedelta(days=PLAN_DAYS))
                 cur.execute("UPDATE users SET tier = %s, is_trial = FALSE, expires_at = %s, "
                             "remind_stage = 0 WHERE user_id = %s", (tier, exp, user_id))
@@ -294,7 +294,8 @@ def set_tier(user_id: int, tier: str) -> bool:
 
 
 def end_plan(user_id: int) -> bool:
-    return _exec("UPDATE users SET expires_at = NOW() WHERE user_id = %s", (user_id,), user_id)
+    return _exec("UPDATE users SET expires_at = NOW() - INTERVAL '1 second' WHERE user_id = %s",
+                 (user_id,), user_id)
 
 
 def set_blocked(user_id: int, blocked: bool) -> bool:

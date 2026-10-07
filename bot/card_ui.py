@@ -166,7 +166,8 @@ async def send_preview(query, context, uid, task, lang):
         cfg = task["cfg"]
         raw, product = await _preview_product(uid)
         card_cfg = dict(clean_card(cfg.get("card")), enabled=True)
-        out = await asyncio.to_thread(render_card, raw, product, card_cfg, cfg.get("watermark", {}))
+        out = await asyncio.to_thread(render_card, raw, product, card_cfg, cfg.get("watermark", {}),
+                                      bool(cfg.get("amazon_badge", True)))
         if not out:
             await query.answer(tr(lang, "❌ Preview failed, try again.", "❌ Preview nahi bana, dobara try karein."),
                                show_alert=True)

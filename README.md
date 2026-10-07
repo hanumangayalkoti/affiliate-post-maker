@@ -35,6 +35,8 @@ Hinglish dono mein, "aap" wali izzat ke saath.
   size, photo size/side, theme, 4 font, badge shape, rang; 👁️ Preview, ↩️ Reset
 - **💧 Watermark:** text, jagah (upar beech / neeche right / left / beech),
   size (Small / Medium / Large), rang
+- **🛒 Amazon Logo:** Amazon post ki photo ke upar-left kone mein chhota official
+  "available at amazon" badge (`assets/amazon_badge.png`) — har task mein ON/OFF, default ON
 - **Chat clean:** naya command aane pe pichle commands aur unke jawab delete.
   Reports (payment, task bana, post report) kabhi delete nahi
 - **FAQ:** 16 aam sawaal, number buttons se

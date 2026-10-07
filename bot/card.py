@@ -345,11 +345,55 @@ def clean_watermark(wm) -> dict:
     return out
 
 
+BADGE_PATH = os.path.join(os.path.dirname(FONT_DIR), "amazon_badge.png")
+_badge_cache: dict = {}
+
+
+def _badge_image():
+    """Amazon ka official 'available at amazon' badge (assets/amazon_badge.png)."""
+    if "img" not in _badge_cache:
+        try:
+            _badge_cache["img"] = Image.open(BADGE_PATH).convert("RGBA")
+        except Exception as e:
+            logger.error(f"Amazon badge nahi mila ({BADGE_PATH}): {e}")
+            _badge_cache["img"] = None
+    return _badge_cache["img"]
+
+
+def badge_box(W: int, H: int):
+    """(x, y, width, height) — top-left kone mein bahut chhota badge."""
+    src = _badge_image()
+    if src is None:
+        return None
+    bw = max(64, min(150, int(min(W, H) * 0.11)))
+    bh = int(bw * src.height / src.width)
+    pad = max(3, int(bh * 0.14))
+    m = int(min(W, H) * 0.016) + 4
+    return m, m, bw + pad * 2, bh + pad * 2
+
+
+def draw_amazon_badge(img: Image.Image) -> Image.Image:
+    """Top-left kone mein chhota sa 'available at amazon' badge, safed pill pe."""
+    src = _badge_image()
+    box = badge_box(*img.size)
+    if src is None or box is None:
+        return img
+    x, y, w, h = box
+    pad = max(3, int((h - 2) * 0.12))
+    logo = src.resize((w - pad * 2, h - pad * 2), Image.LANCZOS)
+    overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    ImageDraw.Draw(overlay).rounded_rectangle([x, y, x + w, y + h], radius=int(h * 0.22),
+                                              fill=(255, 255, 255, 235))
+    overlay.alpha_composite(logo, (x + pad, y + pad))
+    return Image.alpha_composite(img, overlay)
+
+
 def _is_light(c) -> bool:
     return (0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]) > 150
 
 
-def draw_watermark(img: Image.Image, wm: dict, font_key: str = "poppins") -> Image.Image:
+def draw_watermark(img: Image.Image, wm: dict, font_key: str = "poppins",
+                   avoid_left: int = 0) -> Image.Image:
     """
     wm = {"text", "position", "size", "color"}.
     'top' → photo ke upar beech mein saaf text (jaise "Posted On ...").
@@ -370,7 +414,8 @@ def draw_watermark(img: Image.Image, wm: dict, font_key: str = "poppins") -> Ima
 
     if position == "top":
         size = int(max(18, min(46, W * 0.032)) * k)
-        f = _fit(probe, key, text, W * 0.92, size)
+        # Badge left kone mein ho to text beech mein utni jagah chhod ke
+        f = _fit(probe, key, text, max(W * 0.4, W * 0.92 - 2 * avoid_left), size)
         outline = (30, 30, 30) if light else (255, 255, 255)
         probe.text((W / 2, max(10, H * 0.022)), text, font=f, fill=color + (255,), anchor="mt",
                    stroke_width=max(1, int(f.size * 0.06)) if light else 0,
@@ -418,7 +463,8 @@ def _trim_white(im: Image.Image) -> Image.Image:
     return im
 
 
-def render_card(photo_bytes: bytes, product: dict, card: dict, wm: dict = None) -> bytes | None:
+def render_card(photo_bytes: bytes, product: dict, card: dict, wm: dict = None,
+                badge: bool = False) -> bytes | None:
     """
     Card banao. photo_bytes = Amazon ki product photo.
     wm = {"enabled", "text", "position"} (user ki watermark setting).
@@ -437,7 +483,14 @@ def render_card(photo_bytes: bytes, product: dict, card: dict, wm: dict = None) 
         wm_text = wm["text"].strip() if wm["enabled"] else ""
         wm_pos = wm["position"]
         top_pad = int(H * 0.075) if (wm_text and wm_pos == "top") else int(H * 0.04)
+        bbox = badge_box(W, H) if badge else None
+        if bbox:
+            top_pad = max(top_pad, bbox[1] + bbox[3] + int(H * 0.012))
         margin = int(min(W, H) * 0.04)
+        # Neeche watermark ho to info column (price/MRP) usse upar hi rahe
+        bot_extra = 0
+        if wm_text and wm_pos in ("bottom_right", "bottom_left"):
+            bot_extra = int(max(18, min(40, W * 0.035)) * WM_SIZES[wm["size"]][1] * 1.7)
 
         # ── Info column me kya-kya hai ────────────────────────────────────
         price = _money(product.get("deal_price"))
@@ -488,7 +541,7 @@ def render_card(photo_bytes: bytes, product: dict, card: dict, wm: dict = None) 
         if items:
             cx = col_x0 + col_w / 2
             inner = col_w - margin * 1.2
-            avail = H - top_pad - margin
+            avail = H - top_pad - margin - bot_extra
             want = {
                 "price":    inner * 0.95,
                 "discount": inner * 0.62,
@@ -515,7 +568,9 @@ def render_card(photo_bytes: bytes, product: dict, card: dict, wm: dict = None) 
         if wm_text:
             if wm_pos == "top" and wm["color"] == "white" and card["theme"] != "dark":
                 wm = dict(wm, color="black")      # safed card pe safed text na dikhe
-            img = draw_watermark(img, wm, fk)
+            img = draw_watermark(img, wm, fk, avoid_left=(bbox[0] + bbox[2]) if bbox else 0)
+        if bbox:
+            img = draw_amazon_badge(img)
 
         out = io.BytesIO()
         img.convert("RGB").save(out, format="JPEG", quality=92)

@@ -99,6 +99,7 @@ DEFAULT_TASK = {
     "strip_promo":      True,    # doosre channel ke @username / Telegram links hatao
     "min_discount":     0,       # Amazon Discount Filter — isse kam % wali deal skip (0 = OFF)
     "search_links":     False,
+    "amazon_badge":     True,    # Amazon post ki photo pe chhota 'available at amazon' logo
     "amz_detailed":     True,
     "amz_fields":       DEFAULT_AMZ_FIELDS,
     "header":           {"enabled": False, "text": ""},

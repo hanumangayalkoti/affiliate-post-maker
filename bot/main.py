@@ -158,9 +158,9 @@ def help_text(uid: int) -> str:
            f"📖 <b>How to use {esc(BOT_NAME)}</b>\n\n"
            "<b>Posting:</b>\n• Send me an Amazon link (several links in one message = separate posts)\n"
            "• Or put deals in your Draft channel — I'll pick them up\n• Non-Amazon posts work too\n\n"
-           "<b>Commands:</b>\n🏠 /start — Home\n📋 /tasks — Your tasks & all settings\n"
+           "<b>Commands:</b>\n🏠 /start — Home\n📋 /tasks — Your tasks &amp; all settings\n"
            "⚙️ /config — See all settings of a task at a glance\n"
-           "📊 /stats — Your posts\n💎 /plan — Plans & payment\n🎁 /refer — Refer & Earn\n"
+           "📊 /stats — Your posts\n💎 /plan — Plans &amp; payment\n🎁 /refer — Refer &amp; Earn\n"
            "❓ /faq — Common questions\n🌐 /language — Change language\n🧾 /paysupport — Payment help\n",
            f"📖 <b>{esc(BOT_NAME)} — Kaise use karein</b>\n\n"
            "<b>Post kaise karein:</b>\n• Mujhe Amazon link bhejein (ek message mein kai link = alag-alag post)\n"
@@ -199,7 +199,7 @@ def stats_text(uid: int) -> str:
         lines.append(tr(lang, "\n<b>Today by task:</b>", "\n<b>Aaj — task ke hisaab se:</b>"))
         for t in tasks:
             lines.append(f"• {esc(task_ui.tname(t, lang))}: {st['by_task'].get(t['id'], 0)} / {daily}")
-    lines.append(tr(lang, "\n<i>The daily count resets at 12:00 midnight. Clicks & earnings are in your "
+    lines.append(tr(lang, "\n<i>The daily count resets at 12:00 midnight. Clicks &amp; earnings are in your "
                           "Amazon Associates dashboard.</i>",
                     "\n<i>Roz ki ginti raat 12 baje reset hoti hai. Clicks aur kamai Amazon Associates "
                     "dashboard mein dikhegi.</i>"))

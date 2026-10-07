@@ -317,10 +317,11 @@ def task_text(uid: int, task: dict, lang: str) -> str:
         f"🏷️ {tr(lang, 'Affiliate Tag', 'Affiliate Tag')}: <code>{esc(c.get('tag') or '—')}</code>\n",
         f"🔍 {tr(lang, 'Posts', 'Posts')}: {' + '.join(posts)}",
         f"♻️ {tr(lang, 'Duplicate check', 'Duplicate check')}: {_onoff(c.get('dup_check', True))}",
-        f"🚫 @User & TG Link: {_onoff(c.get('strip_promo', True))}",
+        f"🚫 @User &amp; TG Link: {_onoff(c.get('strip_promo', True))}",
         f"📉 Discount Filter: {disc_label(c, lang)}",
         f"🎨 Image Card: {card_line}",
         f"💧 Watermark: {_onoff(wm.get('enabled') and wm.get('text'))}",
+        f"🛒 Amazon Logo: {_onoff(c.get('amazon_badge', True))}",
     ]
     notes = task_notes(uid, task, lang)
     if not run and not task["paused"]:
@@ -353,6 +354,7 @@ def task_kb(uid: int, task: dict, lang: str) -> InlineKeyboardMarkup:
         [btn(f"♻️ Duplicate {_onoff(c.get('dup_check', True))}", callback_data=f"t:{tid}:dup"),
          btn(f"🔔 {tr(lang, 'Notification', 'Notification')}", callback_data=f"t:{tid}:silent")],
         [btn(f"📉 Discount Filter — {disc_label(c, lang)}", callback_data=f"t:{tid}:disc")],
+        [btn(f"{_onoff(c.get('amazon_badge', True))} 🛒 Amazon Logo", callback_data=f"t:{tid}:badge")],
     ]
     # Pause / Resume chhota — Search Links ke bagal mein (2×2 jaisa)
     if task["paused"]:
@@ -485,6 +487,22 @@ def silent_text(task, lang):
               "<b>Loud</b> → har post pe notification bajegi.")
 
 
+def badge_text(task, lang):
+    on = task["cfg"].get("amazon_badge", True)
+    return tr(lang,
+              f"🛒 <b>Amazon Logo</b> — {esc(tname(task, lang))}\n\n"
+              f"Status: <b>{'✅ ON' if on else '❌ OFF'}</b>\n\n"
+              "A small official <b>“available at amazon”</b> logo in the <b>top-left corner</b> of every "
+              "Amazon post photo (Image Card and normal photo). It tells buyers the deal is on Amazon "
+              "and builds trust.\n\n<i>Only on Amazon posts — never on other posts.</i>",
+              f"🛒 <b>Amazon Logo</b> — {esc(tname(task, lang))}\n\n"
+              f"Status: <b>{'✅ ON' if on else '❌ OFF'}</b>\n\n"
+              "Har Amazon post ki photo ke <b>upar-left kone</b> mein chhota sa official "
+              "<b>“available at amazon”</b> logo (Image Card aur normal photo dono pe). Isse buyer ko "
+              "pata chalta hai ki deal Amazon ki hai aur bharosa badhta hai.\n\n"
+              "<i>Sirf Amazon posts pe — baaki posts pe kabhi nahi.</i>")
+
+
 def search_text(task, lang):
     on = task["cfg"].get("search_links")
     return tr(lang,
@@ -501,12 +519,12 @@ def search_text(task, lang):
 def promo_text(task, lang):
     on = task["cfg"].get("strip_promo", True)
     return tr(lang,
-              f"🚫 <b>@User & TG Link</b> — {esc(tname(task, lang))}\n\n"
+              f"🚫 <b>@User &amp; TG Link</b> — {esc(tname(task, lang))}\n\n"
               f"Status: <b>{'✅ ON' if on else '❌ OFF'}</b>\n\n"
               "<b>ON</b> → other channels' <b>@usernames</b> and <b>Telegram links</b> (t.me…) are removed "
               "from the post, including lines like \"Join @xyz for more\". Your own Draft / Destination "
               "channel is never removed.\n<b>OFF</b> → the caption keeps them as they are.",
-              f"🚫 <b>@User & TG Link</b> — {esc(tname(task, lang))}\n\n"
+              f"🚫 <b>@User &amp; TG Link</b> — {esc(tname(task, lang))}\n\n"
               f"Status: <b>{'✅ ON' if on else '❌ OFF'}</b>\n\n"
               "<b>ON</b> → doosre channels ke <b>@username</b> aur <b>Telegram links</b> (t.me…) post se "
               "hat jaate hain, \"Join @xyz for more\" jaisi line bhi. Aapka apna Draft / Destination "
@@ -914,7 +932,8 @@ async def handle_task_callback(query, context, uid: int, data: str) -> bool:
         return True
 
     for a, key, txt in (("dup", "dup_check", dup_text), ("silent", "silent", silent_text),
-                        ("search", "search_links", search_text), ("promo", "strip_promo", promo_text)):
+                        ("search", "search_links", search_text), ("promo", "strip_promo", promo_text),
+                        ("badge", "amazon_badge", badge_text)):
         if act == a:
             default = a != "search"
             if arg == "t":
@@ -1316,7 +1335,7 @@ def config_text(uid: int, task: dict, lang: str) -> str:
              f"🛍️ Amazon posts: {on(c.get('allow_amazon', True))}",
              f"📝 Non-Amazon posts: {on(c.get('allow_other', True))}",
              f"♻️ Duplicate: {on(c.get('dup_check', True))}",
-             f"🚫 @User & TG Link: {on(c.get('strip_promo', True))}",
+             f"🚫 @User &amp; TG Link: {on(c.get('strip_promo', True))}",
              f"🔗 Search Links: {on(c.get('search_links'))}",
              f"📉 Discount Filter: {disc_label(c, lang)}",
              f"🔔 Notification: {'🔕 Silent' if c.get('silent', True) else '🔔 Loud'}\n"]

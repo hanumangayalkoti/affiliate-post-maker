@@ -101,7 +101,7 @@ def _faqs(lang):
             "Aapke plan mein roz kitni post ho sakti hain (/plan dekhein). Ye limit HAR TASK ki alag hai — "
             "jaise Pro (500) mein 2 task hain to dono task roz 500-500 post kar sakte hain. Har raat 12 baje "
             "(IST) reset hoti hai.")),
-        (tr(lang, "How does Refer & Earn work?", "Refer & Earn kaise kaam karta hai?"),
+        (tr(lang, "How does Refer &amp; Earn work?", "Refer &amp; Earn kaise kaam karta hai?"),
          tr(lang,
             "Open /refer and share your link. Whenever someone who joined with it pays — first time and every "
             "renewal — you get a commission of that payment. Once your balance reaches the minimum, tap "

@@ -481,7 +481,7 @@ async def refer_screen(bot, uid: int, lang: str):
     method, address = get_payout(uid)
 
     lines = [
-        tr(lang, "🎁 <b>Refer & Earn</b>\n", "🎁 <b>Refer & Earn</b>\n"),
+        tr(lang, "🎁 <b>Refer &amp; Earn</b>\n", "🎁 <b>Refer &amp; Earn</b>\n"),
         tr(lang, f"Earn <b>{REFERRAL_PERCENT}% commission</b> on <b>every payment</b> your referrals make — "
                  "first payment and every renewal, for life (Stars payments count at the plan's ₹ price).\n"
                  "<i>Someone who hasn't paid yet becomes yours when they open your link; after their first "
