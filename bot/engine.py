@@ -1087,6 +1087,12 @@ async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str
             # MINIMAL — original caption, ek hi post (kitne bhi product links hon)
             fetched = await get_products_by_asins([p["asin"] for p in products])
             live = [fetched[p["asin"]] for p in products if p["asin"] in fetched]
+            if not live:
+                # Kisi bhi product ki detail nahi mili → post nahi (duplicate mein bhi nahi)
+                await _edit_or_notify(wait_msg, notify,
+                                      _nodata_skip_text(lang, products[0]["asin"], len(products)),
+                                      parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+                return
             # Discount Filter: koi bhi ek product pass kare to post. Kisi product ka
             # data hi na mile to bhi post (deal miss na ho) — skip sirf tab jab saare
             # products ka discount pata hai aur sab kam hain.
@@ -1168,43 +1174,11 @@ async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str
                 if i < len(live) - 1:
                     await asyncio.sleep(POST_GAP_SECONDS)
 
-            # Single product + data nahi mila → original text user ke tag ke saath
+            # Single product + data nahi mila → post NAHI (bina photo/price wali post
+            # kharab dikhti hai). Duplicate mein bhi nahi gina — dobara bhejo to try hoga.
             if len(products) == 1 and not posted and nodata:
-                asin = products[0]["asin"]
-                fb_key = ("a:" + asin) if cfg.get("dup_check", True) else ""
-                if fb_key:
-                    ok, when = claim_posted(uid, task["id"], fb_key)
-                    if not ok:
-                        await _edit_or_notify(wait_msg, notify,
-                                              tr(lang, f"⚠️ <b>Already posted</b> ({when} ago) — skipped.",
-                                                 f"⚠️ <b>Pehle post ho chuka hai</b> ({when} pehle) — skip kiya."),
-                                              parse_mode=ParseMode.HTML)
-                        return
-                cp, ce = remove_footer(raw_plain, raw_entities)
-                cp, ce = _strip_if_on(cp, ce, cfg)
-                cp, ce = await replace_amazon_links(cp, ce, amazon_urls, tag)
-                body   = entities_to_html(cp, ce)
-                try:
-                    await deliver(context.bot.send_message,
-                                  dict(chat_id=channel, text=wrap_plain_post(body, cfg, has_image=False),
-                                       parse_mode=ParseMode.HTML, disable_web_page_preview=True,
-                                       reply_markup=build_final_markup(cfg, asin=asin),
-                                       disable_notification=cfg.get("silent", True)))
-                    log_post(uid, task["id"], "amazon", asin, cp[:80])
-                    await _edit_or_notify(
-                        wait_msg, notify,
-                        tr(lang,
-                           "✅ <b>Posted!</b>\n⚠️ Amazon didn't return product details — sent your "
-                           "original text with your affiliate link.",
-                           "✅ <b>Post ho gaya!</b>\n⚠️ Amazon se product details nahi mili — aapka "
-                           "original text aapke affiliate link ke saath bheja.")
-                        + _nodata_reason(lang, asin) + _filter_line(lang, md, nodata=1) + footer,
-                        parse_mode=ParseMode.HTML, disable_web_page_preview=True)
-                except Exception as e:
-                    release_posted(uid, task["id"], fb_key)
-                    await _edit_or_notify(wait_msg, notify,
-                                          tr(lang, "❌ <b>Post failed!</b>\n", "❌ <b>Post nahi hua!</b>\n")
-                                          + esc(_friendly_error(e, lang)), parse_mode=ParseMode.HTML)
+                await _edit_or_notify(wait_msg, notify, _nodata_skip_text(lang, products[0]["asin"]),
+                                      parse_mode=ParseMode.HTML, disable_web_page_preview=True)
                 return
 
             lines = []
@@ -1228,9 +1202,11 @@ async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str
                 lines.append(tr(lang, f"\n♻️ {len(dupes)} already posted in last 24h (skipped)",
                                 f"\n♻️ {len(dupes)} pichle 24 ghante mein post ho chuki (skip)"))
             if nodata:
-                lines.append(tr(lang, f"⚠️ Amazon returned no data for {len(nodata)}",
-                                f"⚠️ {len(nodata)} ka data Amazon se nahi mila")
-                             + _nodata_reason(lang, nodata[0]))
+                lines.append(tr(lang, f"⏭️ {len(nodata)} skipped — Amazon returned no product details",
+                                f"⏭️ {len(nodata)} skip — Amazon se product details nahi mili")
+                             + _nodata_reason(lang, nodata[0])
+                             + tr(lang, "\n<i>Send them again in a while — not counted as duplicate.</i>",
+                                  "\n<i>Thodi der baad dobara bhejein — duplicate nahi maana jayega.</i>"))
             if errors:
                 lines.append(f"❌ {len(errors)} — {esc(errors[0])}")
             if low:
@@ -1242,8 +1218,7 @@ async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str
                 lines.append(tr(lang, f"🚫 {len(searches)} search pages skipped",
                                 f"🚫 {len(searches)} search page chhod diye"))
             if md:
-                lines.append(_filter_line(lang, md, passed=len(live), skipped=len(low),
-                                          nodata=len(nodata)).lstrip("\n"))
+                lines.append(_filter_line(lang, md, passed=len(live), skipped=len(low)).lstrip("\n"))
             if all_skipped:
                 names = ", ".join(FIELD_LABELS.get(k, k) for k in all_skipped)
                 lines.append(tr(lang, f"\n✂️ Not enough space, left out: <b>{esc(names)}</b>",
@@ -1303,6 +1278,20 @@ def _deal_info(p: dict) -> str:
     if bits:
         out.append("💰 " + " · ".join(bits))
     return "\n".join(out)
+
+
+def _nodata_skip_text(lang: str, asin: str, n: int = 1) -> str:
+    """Amazon se detail nahi mili → post nahi hui. Draft mein saaf wajah."""
+    what = f"<code>{esc(asin)}</code>" + (f" (+{n - 1})" if n > 1 else "")
+    return (tr(lang,
+               f"⏭️ <b>Skipped — Amazon didn't return product details</b>\n🛍️ {what}",
+               f"⏭️ <b>Skip — Amazon se product details nahi mili</b>\n🛍️ {what}")
+            + _nodata_reason(lang, asin)
+            + tr(lang,
+                 "\n<i>Not posted (no photo/price). Send it again in a while — "
+                 "it won't be counted as a duplicate.</i>",
+                 "\n<i>Post nahi ki (photo/price nahi the). Thodi der baad dobara bhejein — "
+                 "duplicate nahi maana jayega.</i>"))
 
 
 def _filter_line(lang: str, md: int, passed: int = 0, skipped: int = 0, nodata: int = 0) -> str:
