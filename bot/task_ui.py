@@ -318,6 +318,7 @@ def task_text(uid: int, task: dict, lang: str) -> str:
         f"🏷️ {tr(lang, 'Affiliate Tag', 'Affiliate Tag')}: <code>{esc(c.get('tag') or '—')}</code>\n",
         f"🔍 {tr(lang, 'Posts', 'Posts')}: {' + '.join(posts)}",
         f"♻️ {tr(lang, 'Duplicate check', 'Duplicate check')}: {_onoff(c.get('dup_check', True))}",
+        f"🚫 @User & TG Link: {_onoff(c.get('strip_promo', True))}",
         f"🎨 Image Card: {card_line}",
         f"💧 Watermark: {_onoff(wm.get('enabled') and wm.get('text'))}",
     ]
@@ -351,7 +352,8 @@ def task_kb(uid: int, task: dict, lang: str) -> InlineKeyboardMarkup:
          btn("🔚 Footer", callback_data=f"t:{tid}:hf:footer")],
         [btn(f"♻️ Duplicate {_onoff(c.get('dup_check', True))}", callback_data=f"t:{tid}:dup"),
          btn(f"🔔 {tr(lang, 'Notification', 'Notification')}", callback_data=f"t:{tid}:silent")],
-        [btn(f"🔗 Search Links {_onoff(c.get('search_links'))}", callback_data=f"t:{tid}:search")],
+        [btn(f"🔗 Search Links {_onoff(c.get('search_links'))}", callback_data=f"t:{tid}:search"),
+         btn(f"{_onoff(c.get('strip_promo', True))} 🚫 @User & TG Link", callback_data=f"t:{tid}:promo")],
     ]
     ctl = []
     if not (d and d["id"] == tid):
@@ -492,6 +494,21 @@ def search_text(task, lang):
               f"Status: <b>{'✅ ON' if on else '❌ OFF'}</b>\n\n"
               "Amazon search / deals page wale link (ek product nahi, list).\n"
               "<b>ON</b> → ye bhi aapke tag ke saath post honge.\n<b>OFF</b> → skip honge.")
+
+
+def promo_text(task, lang):
+    on = task["cfg"].get("strip_promo", True)
+    return tr(lang,
+              f"🚫 <b>@User & TG Link</b> — {esc(tname(task, lang))}\n\n"
+              f"Status: <b>{'✅ ON' if on else '❌ OFF'}</b>\n\n"
+              "<b>ON</b> → other channels' <b>@usernames</b> and <b>Telegram links</b> (t.me…) are removed "
+              "from the post, including lines like \"Join @xyz for more\". Your own Draft / Destination "
+              "channel is never removed.\n<b>OFF</b> → the caption keeps them as they are.",
+              f"🚫 <b>@User & TG Link</b> — {esc(tname(task, lang))}\n\n"
+              f"Status: <b>{'✅ ON' if on else '❌ OFF'}</b>\n\n"
+              "<b>ON</b> → doosre channels ke <b>@username</b> aur <b>Telegram links</b> (t.me…) post se "
+              "hat jaate hain, \"Join @xyz for more\" jaisi line bhi. Aapka apna Draft / Destination "
+              "channel kabhi nahi hatta.\n<b>OFF</b> → caption mein jaise hain waise rahenge.")
 
 
 def toggle_kb(task, action, on, lang, on_label=None, off_label=None):
@@ -835,7 +852,7 @@ async def handle_task_callback(query, context, uid: int, data: str) -> bool:
         return True
 
     for a, key, txt in (("dup", "dup_check", dup_text), ("silent", "silent", silent_text),
-                        ("search", "search_links", search_text)):
+                        ("search", "search_links", search_text), ("promo", "strip_promo", promo_text)):
         if act == a:
             default = a != "search"
             if arg == "t":

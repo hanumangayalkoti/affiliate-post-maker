@@ -135,7 +135,7 @@ def answer_text(lang: str, i: int) -> str:
     if not 1 <= i <= len(qs):
         return faq_text(lang)
     q, a = qs[i - 1]
-    return f"❓ <b>{q}</b>\n\n{a}"
+    return f"❓ <b>{i}. {q}</b>\n\n{a}"
 
 
 def answer_kb(lang: str, i: int) -> InlineKeyboardMarkup:

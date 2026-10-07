@@ -51,7 +51,7 @@ from storage import (
     LOCAL_TZ,
 )
 from tiers import TRIAL_DAYS, TIERS
-from ui import btn, tr, chan, new_screen, track, GREEN, BLUE, TAGLINE
+from ui import btn, tr, chan, new_screen, track, user_lock, GREEN, BLUE, TAGLINE
 from users import (
     ADMIN_IDS, OWNER_ID, is_admin, is_active, is_blocked, get_user, upsert_user, get_lang,
     set_lang, set_default_task, days_left, limits, start_trial, users_expiring_soon,
@@ -255,30 +255,75 @@ def _touch(update: Update):
     return u.id, upsert_user(u.id, u.username or "", u.first_name or "")
 
 
+# Bot jis jawab ka intezaar kar raha tha — naya command aane pe user ko naam se batate hain
+ACTION_NAMES = {
+    "t_tag":       ("setting the Affiliate Tag", "Affiliate Tag set karna"),
+    "t_dest":      ("setting the Destination channel", "Destination channel set karna"),
+    "t_src":       ("setting the Draft channel", "Draft channel set karna"),
+    "t_name":      ("renaming the task", "Task ka naam badalna"),
+    "t_hf":        ("setting the Header / Footer text", "Header / Footer ka text set karna"),
+    "t_wm":        ("setting the Watermark text", "Watermark ka text set karna"),
+    "t_btn_label": ("setting the button name", "Button ka naam set karna"),
+    "t_btn_link":  ("setting the button link", "Button ka link set karna"),
+    "adm_find":    ("finding a user", "User dhoondhna"),
+    "adm_bc":      ("broadcast", "Broadcast"),
+    "adm_days":    ("adding / reducing days", "Din jodna / kaatna"),
+    "adm_msg":     ("messaging a user", "User ko message bhejna"),
+}
+_ACTION_KEYS = ("action", "tid", "bkey", "hf_kind", "adm_target", "adm_sign", "adm_back", "bc_src")
+
+
+def _drop_pending(context) -> str:
+    """Adhoora kaam (bot jawab ka intezaar kar raha tha) band karo. Uska key wapas."""
+    prev = context.user_data.get("action") or ""
+    for k in _ACTION_KEYS:
+        context.user_data.pop(k, None)
+    return prev
+
+
+def _pending_note(prev: str, lang: str) -> str:
+    en, hi = ACTION_NAMES.get(prev, ("the previous step", "Pichla kaam"))
+    return tr(lang, f"⚠️ <b>Previous action cancelled:</b> {en}.\nYou can start it again any time.",
+              f"⚠️ <b>Pichla kaam band kar diya:</b> {hi}.\nJab chahein dobara shuru kar sakte hain.")
+
+
 def user_command(fn):
-    """Har user command: register, block, chat clean, gate."""
+    """Har user command: register, block, chat clean, gate. Ek user ke commands
+    ek-ek karke chalte hain (lock), taaki chat clean gadbad na ho."""
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        uid, is_new = _touch(update)
+        uid = update.effective_user.id if update.effective_user else 0
         if not uid:
             return
-        msg = update.message
-        if is_new:
-            await notify_admins(context.bot, f"🆕 <b>Naya user</b>: {who(uid)}", uid)
-        if is_blocked(uid):
-            lang = get_lang(uid)
-            await msg.reply_text("⛔ " + tr(lang, "Your access has been blocked.",
-                                            "Aapka access band kar diya gaya hai.") + "\n" + billing.support_line(lang))
-            return
-        await new_screen(context, context.bot, msg.chat_id, msg.message_id)
-        context.user_data.pop("action", None)
-        g = await gate_screen(context.bot, uid)
-        if g:
-            track(context, await msg.reply_text(g[0], parse_mode=ParseMode.HTML, reply_markup=g[1],
-                                                disable_web_page_preview=True))
-            return
-        await after_gate(context.bot, uid)
-        await fn(update, context, uid)
+        async with user_lock(uid):
+            await _user_command(fn, update, context)
     return wrapper
+
+
+async def _user_command(fn, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid, is_new = _touch(update)
+    if not uid:
+        return
+    msg = update.message
+    if is_new:
+        await notify_admins(context.bot, f"🆕 <b>Naya user</b>: {who(uid)}", uid)
+    if is_blocked(uid):
+        lang = get_lang(uid)
+        await msg.reply_text("⛔ " + tr(lang, "Your access has been blocked.",
+                                        "Aapka access band kar diya gaya hai.") + "\n" + billing.support_line(lang))
+        return
+    await new_screen(context, context.bot, msg.chat_id, msg.message_id)
+    prev = _drop_pending(context)
+    if prev and fn is cmd_cancel:
+        context.user_data["_cancelled"] = prev
+    elif prev:
+        track(context, await msg.reply_text(_pending_note(prev, get_lang(uid)), parse_mode=ParseMode.HTML))
+    g = await gate_screen(context.bot, uid)
+    if g:
+        track(context, await msg.reply_text(g[0], parse_mode=ParseMode.HTML, reply_markup=g[1],
+                                            disable_web_page_preview=True))
+        return
+    await after_gate(context.bot, uid)
+    await fn(update, context, uid)
 
 
 def admin_command(fn):
@@ -286,9 +331,13 @@ def admin_command(fn):
         u = update.effective_user
         if not u or not is_admin(u.id):
             return
-        await new_screen(context, context.bot, update.message.chat_id, update.message.message_id)
-        context.user_data.pop("action", None)
-        await fn(update, context, u.id)
+        async with user_lock(u.id):
+            await new_screen(context, context.bot, update.message.chat_id, update.message.message_id)
+            prev = _drop_pending(context)
+            if prev:
+                track(context, await update.message.reply_text(_pending_note(prev, get_lang(u.id)),
+                                                               parse_mode=ParseMode.HTML))
+            await fn(update, context, u.id)
     return wrapper
 
 
@@ -346,10 +395,14 @@ async def cmd_language(update, context, uid):
 
 
 async def cmd_cancel(update, context, uid):
-    for k in ("action", "tid", "bkey", "hf_kind", "adm_target", "adm_sign", "adm_back", "bc_src"):
-        context.user_data.pop(k, None)
-    await _send(update, context, tr(get_lang(uid), "❌ Cancelled.", "❌ Band kar diya."),
-                InlineKeyboardMarkup([HOME_ROW]))
+    lang = get_lang(uid)
+    prev = context.user_data.pop("_cancelled", "") or _drop_pending(context)
+    if prev:
+        en, hi = ACTION_NAMES.get(prev, ("the previous step", "Pichla kaam"))
+        text = tr(lang, f"❌ <b>Cancelled:</b> {en}.", f"❌ <b>Band kar diya:</b> {hi}.")
+    else:
+        text = tr(lang, "ℹ️ Nothing was pending to cancel.", "ℹ️ Band karne ko koi kaam chal nahi raha tha.")
+    await _send(update, context, text, InlineKeyboardMarkup([HOME_ROW]))
 
 
 async def _has_amazon_link(msg) -> bool:

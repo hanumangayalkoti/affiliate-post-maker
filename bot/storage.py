@@ -96,6 +96,7 @@ DEFAULT_TASK = {
     "allow_amazon":     True,    # Amazon posts jaayengi?
     "allow_other":      True,    # Non-Amazon posts jaayengi?
     "dup_check":        True,    # 24 ghante mein same post dobara nahi
+    "strip_promo":      True,    # doosre channel ke @username / Telegram links hatao
     "search_links":     False,
     "amz_detailed":     True,
     "amz_fields":       DEFAULT_AMZ_FIELDS,
@@ -168,6 +169,12 @@ def init_db():
     """Saare tables banao / naye columns jodo + purana data naye structure mein."""
     with get_db() as conn:
         with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS ui_screens (
+                    user_id BIGINT PRIMARY KEY,
+                    msg_ids JSONB  NOT NULL DEFAULT '[]'
+                )
+            """)
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS bot_config (
                     key   TEXT PRIMARY KEY,
@@ -515,3 +522,34 @@ def find_tasks_by_source(chat_id: int, username: str = "") -> list:
 
 def find_tasks_by_dest(chat_id: int, username: str = "") -> list:
     return _find_tasks("channel", chat_id, username)
+
+
+# =============================================================================
+# CHAT CLEAN — screen ke message IDs (restart / redeploy ke baad bhi yaad)
+# =============================================================================
+def screen_ids_get(user_id: int) -> list:
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT msg_ids FROM ui_screens WHERE user_id = %s", (user_id,))
+                row = cur.fetchone()
+        data = row[0] if row else []
+        if isinstance(data, str):
+            data = json.loads(data)
+        return [int(x) for x in data if isinstance(x, int) or str(x).isdigit()]
+    except Exception as e:
+        logger.error(f"screen_ids_get error: {e}")
+        return []
+
+
+def screen_ids_set(user_id: int, ids: list):
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO ui_screens (user_id, msg_ids) VALUES (%s, %s)
+                       ON CONFLICT (user_id) DO UPDATE SET msg_ids = EXCLUDED.msg_ids""",
+                    (user_id, json.dumps([int(x) for x in ids][-60:])),
+                )
+    except Exception as e:
+        logger.error(f"screen_ids_set error: {e}")
