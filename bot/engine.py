@@ -41,7 +41,7 @@ MAX_PER_MESSAGE  = 15
 SELF_MARKER = "\u2063"        # invisible — bot apne message pehchanne ke liye
 
 # ── TIMEZONE ─────────────────────────────────────────────────────────────
-from storage import LOCAL_TZ, to_local, local_day_start_utc, list_tasks  # noqa: E402
+from storage import LOCAL_TZ, to_local, local_day_start_utc, list_tasks, get_task  # noqa: E402
 
 
 def now_local() -> datetime:
@@ -1051,7 +1051,11 @@ async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str
     # AMAZON
     # ==========================================================================
     if amazon_urls:
-        wait_msg = await notify(tr(lang, "⏳ Checking Amazon links...", "⏳ Amazon links check ho rahe hain..."))
+        # Draft channel mein "Checking..." wala extra message nahi — Telegram ek
+        # channel mein ~20 message/minute hi bhejne deta hai; sale mein har deal pe
+        # 2 reply (× har task) se line lag jaati thi aur bot slow ho jaata tha.
+        wait_msg = None if source_tag else await notify(
+            tr(lang, "⏳ Checking Amazon links...", "⏳ Amazon links check ho rahe hain..."))
         buckets  = await classify_amazon_urls(amazon_urls)
         products = buckets["products"]
         searches = buckets["searches"]
@@ -1071,6 +1075,12 @@ async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str
                 parse_mode=ParseMode.HTML)
             return
 
+        # Post aane ke baad Amazon/Telegram ke intezaar mein user ne settings badli
+        # ho sakti hain (Discount Filter, buttons...) — taaza settings se chalo.
+        fresh = get_task(task["id"], uid)
+        if fresh:
+            task = fresh
+            cfg = task["cfg"]
         md = _min_discount(cfg)
 
         if products and not cfg.get("amz_detailed", True):
@@ -1092,10 +1102,18 @@ async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str
                           "✅ <b>Original caption ke saath post ho gaya!</b>")
                 if n:
                     text += f"\n🖼️ {esc(n)}"
-                if not live:
+                if live:
+                    text += "\n" + _deal_info(max(live, key=_disc))
+                else:
                     text += tr(lang, "\n⚠️ Amazon didn't return product details.",
                                "\n⚠️ Amazon se product details nahi mili.")
                     text += _nodata_reason(lang, products[0]["asin"])
+                if md:
+                    if live and max(_disc(p) for p in live) >= md:
+                        text += tr(lang, f"\n📉 Discount Filter {md}%+: ✅ passed",
+                                   f"\n📉 Discount Filter {md}%+: ✅ pass")
+                    else:
+                        text += _filter_line(lang, md, nodata=1)
                 text += footer
             elif status == "duplicate":
                 text = tr(lang, f"♻️ <b>Already posted</b> ({esc(detail)} ago) — skipped.",
@@ -1114,7 +1132,7 @@ async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str
                 products = products[:cap]
 
             fetched = await get_products_by_asins([p["asin"] for p in products])
-            posted, dupes, errors = [], [], []
+            posted, dupes, errors, posted_prods = [], [], [], []
             note, all_skipped = "", set()
 
             live = [fetched[p["asin"]] for p in products if p["asin"] in fetched]
@@ -1138,6 +1156,7 @@ async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str
                 status, detail, n = await post_amazon_product(context, uid, task, prod, lang)
                 if status == "posted":
                     posted.append(detail)
+                    posted_prods.append(prod)
                     note = note or n
                     _, sk = build_amazon_caption(prod, make_affiliate_url(prod.get("asin", ""), tag),
                                                  cfg, has_image=bool(n))
@@ -1179,7 +1198,7 @@ async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str
                            "original text with your affiliate link.",
                            "✅ <b>Post ho gaya!</b>\n⚠️ Amazon se product details nahi mili — aapka "
                            "original text aapke affiliate link ke saath bheja.")
-                        + _nodata_reason(lang, asin) + footer,
+                        + _nodata_reason(lang, asin) + _filter_line(lang, md, nodata=1) + footer,
                         parse_mode=ParseMode.HTML, disable_web_page_preview=True)
                 except Exception as e:
                     release_posted(uid, task["id"], fb_key)
@@ -1191,14 +1210,18 @@ async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str
             lines = []
             if len(posted) == 1 and not dupes and not nodata and not errors:
                 lines.append(tr(lang, "✅ <b>Amazon deal posted!</b>", "✅ <b>Amazon deal post ho gayi!</b>"))
+                info = _deal_info(posted_prods[0]) if posted_prods else ""
+                if info:
+                    lines.append(info)
                 lines.append(f"🖼️ {note}" if note else tr(lang, "📝 Text post (no image)", "📝 Text post (photo nahi)"))
             else:
                 lines.append(tr(lang, f"✅ <b>{len(posted)} deals posted!</b>",
                                 f"✅ <b>{len(posted)} deal post ho gayi!</b>")
                              if posted else tr(lang, "⚠️ <b>No deal was posted.</b>",
                                                "⚠️ <b>Koi deal post nahi hui.</b>"))
-                for t in posted[:8]:
-                    lines.append(f"   • {esc(t[:50])}")
+                for i, t in enumerate(posted[:8]):
+                    d = _disc(posted_prods[i]) if i < len(posted_prods) else 0
+                    lines.append(f"   • {esc(t[:50])}" + (f" — <b>{d}%</b>" if d else ""))
                 if note:
                     lines.append(f"🖼️ {note}")
             if dupes:
@@ -1218,6 +1241,9 @@ async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str
             if searches:
                 lines.append(tr(lang, f"🚫 {len(searches)} search pages skipped",
                                 f"🚫 {len(searches)} search page chhod diye"))
+            if md:
+                lines.append(_filter_line(lang, md, passed=len(live), skipped=len(low),
+                                          nodata=len(nodata)).lstrip("\n"))
             if all_skipped:
                 names = ", ".join(FIELD_LABELS.get(k, k) for k in all_skipped)
                 lines.append(tr(lang, f"\n✂️ Not enough space, left out: <b>{esc(names)}</b>",
@@ -1260,6 +1286,38 @@ def _disc(product: dict) -> int:
         return int(product.get("discount_pct") or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _deal_info(p: dict) -> str:
+    """Draft reply ke liye: '🛍️ naam\n💰 ₹199 (MRP ₹850) · 77% off'."""
+    out = []
+    title = (p.get("title") or p.get("asin") or "").strip()
+    if title:
+        out.append(f"🛍️ {esc(title[:70])}")
+    price, mrp, d = p.get("deal_price") or "", p.get("actual_price") or "", _disc(p)
+    bits = []
+    if price:
+        bits.append(f"<b>{esc(price)}</b>" + (f" (MRP {esc(mrp)})" if mrp and mrp != price else ""))
+    if d:
+        bits.append(f"<b>{d}% off</b>")
+    if bits:
+        out.append("💰 " + " · ".join(bits))
+    return "\n".join(out)
+
+
+def _filter_line(lang: str, md: int, passed: int = 0, skipped: int = 0, nodata: int = 0) -> str:
+    """Discount Filter ON ho to reply mein saaf likho ki kya hua."""
+    if not md:
+        return ""
+    parts = []
+    if passed:
+        parts.append(tr(lang, f"✅ {passed} passed", f"✅ {passed} pass"))
+    if skipped:
+        parts.append(tr(lang, f"⏭️ {skipped} skipped", f"⏭️ {skipped} skip"))
+    if nodata:
+        parts.append(tr(lang, f"❓ {nodata} not checked (no Amazon data — posted so the deal isn't missed)",
+                        f"❓ {nodata} check nahi hua (Amazon data nahi mila — deal miss na ho isliye post ki)"))
+    return f"\n📉 Discount Filter {md}%+: " + (" · ".join(parts) or "—")
 
 
 def _low_discount_text(lang: str, have: int, need: int, title: str = "") -> str:

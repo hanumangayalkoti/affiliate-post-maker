@@ -474,6 +474,24 @@ def save_task(user_id: int, task_id: int, cfg: dict) -> bool:
         return False
 
 
+def patch_task_cfg(user_id: int, task_id: int, patch: dict) -> bool:
+    """Task ki settings mein SIRF ye keys likho (baaki jaisi DB mein hain waisi).
+    Poora cfg save karne se, beech mein user ne jo badla (filter, button...) wo
+    purani copy se mit jaata tha."""
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE tasks SET data = data || %s::jsonb WHERE id = %s AND user_id = %s",
+                            (json.dumps(patch, ensure_ascii=False), task_id, user_id))
+                ok = cur.rowcount > 0
+        _forget_tasks(user_id)
+        return ok
+    except Exception as e:
+        logger.error(f"patch_task_cfg error ({task_id}): {e}")
+        _forget_tasks(user_id)
+        return False
+
+
 def set_task_paused(user_id: int, task_id: int, paused: bool) -> bool:
     try:
         with get_db() as conn:
