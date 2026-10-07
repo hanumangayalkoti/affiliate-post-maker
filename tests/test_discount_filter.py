@@ -97,17 +97,26 @@ class DiscountFilterTest(unittest.TestCase):
         self.assertEqual(self.posted, ["B0AAAAAAA1"])
         self.assertIn("1 skip", replies[-1])
 
-    def test_no_amazon_data_skipped_not_claimed(self):
-        replies = self.go(f"Deal {A1}", {})            # API ne data nahi diya
+    def test_no_data_filter_on_skipped_not_claimed(self):
+        replies = self.go(f"Deal {A1}", {})            # filter 50% ON, API ne data nahi diya
         self.assertEqual(self.posted, [])              # post NAHI hua
-        self.assertEqual(self.claims, [])                   # duplicate mein nahi gina
+        self.assertEqual(self.claims, [])              # duplicate mein nahi gina
         self.assertIn("details nahi mili", replies[-1])
+        self.assertIn("50%+ ON", replies[-1])
         self.assertIn("B0AAAAAAA1", replies[-1])
 
-    def test_minimal_no_data_skipped(self):
+    def test_no_data_filter_off_still_posted(self):
+        self.go(f"Deal {A1}", {}, min_discount=0)
+        self.assertEqual(self.posted, ["fallback"])    # pehle jaisa original text + tag
+
+    def test_minimal_no_data_filter_on_skipped(self):
         replies = self.go(f"Deal {A1}", {}, amz_detailed=False)
         self.assertEqual(self.original, [])
         self.assertIn("details nahi mili", replies[-1])
+
+    def test_minimal_no_data_filter_off_posted(self):
+        self.go(f"Deal {A1}", {}, amz_detailed=False, min_discount=0)
+        self.assertEqual(self.original, [True])
 
     def test_non_amazon_never_filtered(self):
         self.go("Flipkart deal https://fkrt.it/x", {})
