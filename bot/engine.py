@@ -1069,9 +1069,11 @@ async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str
                 wait_msg, notify,
                 tr(lang,
                    f"🚫 <b>Skipped!</b> Only Amazon search/deals pages found ({len(searches)}).\n"
-                   "<i>To post these too, turn ON 'Search Links' in the task settings.</i>",
+                   "<i>To post these too, turn ON 'Search Links' in the task settings"
+                   + (" and turn the Discount Filter OFF" if _min_discount(cfg) else "") + ".</i>",
                    f"🚫 <b>Skip!</b> Sirf Amazon search/deals page mile ({len(searches)}).\n"
-                   "<i>Ye bhi post karne hain to task settings mein 'Search Links' ON karein.</i>"),
+                   "<i>Ye bhi post karne hain to task settings mein 'Search Links' ON karein"
+                   + (" aur Discount Filter OFF karein" if _min_discount(cfg) else "") + ".</i>"),
                 parse_mode=ParseMode.HTML)
             return
 

@@ -237,12 +237,20 @@ async def after_gate(bot, uid: int):
         if exp:
             pro = TIERS["pro"]
             await dm_user(bot, uid,
-                          tr(lang, f"🎁 <b>Your {TRIAL_DAYS}-day Pro trial has started — free!</b>\n"
-                                   f"📅 Valid till {fmt_date(exp)}\n📋 {pro['tasks']} tasks • "
-                                   f"📤 {pro['daily']} posts/day per task • 🎨 Image Card",
-                             f"🎁 <b>Aapka {TRIAL_DAYS} din ka Pro trial shuru — bilkul free!</b>\n"
-                             f"📅 {fmt_date(exp)} tak\n📋 {pro['tasks']} task • "
-                             f"📤 {pro['daily']} post/din har task • 🎨 Image Card"),
+                          tr(lang, f"🎁 <b>Your free Pro trial has started!</b>\n\n"
+                                   f"⏳ <b>{TRIAL_DAYS} days left</b> — valid till <b>{fmt_date(exp)}</b>\n"
+                                   f"📋 {pro['tasks']} tasks • 📤 {pro['daily']} posts/day per task • 🎨 Image Card\n"
+                                   "💸 No payment needed for the trial.\n\n"
+                                   "🔔 We'll remind you 2 days before it ends. After that, posts stop until "
+                                   "you pick a plan in /plan.\n"
+                                   "👉 Next: open /tasks and set your Draft, Destination and Amazon tag.",
+                             f"🎁 <b>Aapka free Pro trial shuru ho gaya!</b>\n\n"
+                             f"⏳ <b>{TRIAL_DAYS} din bache hain</b> — <b>{fmt_date(exp)}</b> tak chalega\n"
+                             f"📋 {pro['tasks']} task • 📤 {pro['daily']} post/din har task • 🎨 Image Card\n"
+                             "💸 Trial ke liye koi payment nahi.\n\n"
+                             "🔔 Khatam hone se 2 din pehle yaad dila denge. Uske baad /plan se plan lene tak "
+                             "posts ruk jayengi.\n"
+                             "👉 Aage: /tasks kholein aur Draft, Destination aur Amazon tag set karein."),
                           parse_mode=ParseMode.HTML)
             await notify_admins(bot, f"🎁 <b>Trial shuru</b>: {who(uid)}", uid)
             # Pehli baar hi Task 1 banta hai — user ne baad mein delete kiya to wapas nahi
