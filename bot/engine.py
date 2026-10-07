@@ -19,11 +19,13 @@ from telegram.error import RetryAfter, TimedOut, NetworkError, Forbidden, BadReq
 from amazon_api import (
     is_amazon_url, is_amazon_search_url, resolve_amazon_url,
     extract_asin, get_products_by_asins,
-    make_affiliate_url, make_cart_url, get_short_affiliate_link,
+    make_affiliate_url, make_cart_url, get_short_affiliate_link, display_link,
     is_known_amazon, find_amazon_behind_many,
 )
 from caption import build_amazon_caption, wrap_plain_post, FIELD_LABELS
-from database import is_duplicate, mark_posted, log_post, posts_today, normalise_caption
+from database import (
+    claim_posted, release_posted, log_post, posts_today, normalise_caption,
+)
 from users import limits
 from watermark import apply_watermark
 from card import render_card
@@ -302,9 +304,12 @@ async def replace_amazon_links(text: str, entities: list, urls: list, tag: str):
         except Exception as e:
             logger.error(f"Affiliate link fail: {e}")
             continue
+        # Chhota asli link, tag ke saath, KHULA dikhe (https://amazon.in/dp/ASIN?tag=..)
+        # — chhupa link nahi, taaki Telegram "Open this link?" na pooche.
+        shown = display_link(short) or short
         pos = 0
         for _ in range(20):
-            text, entities, pos = replace_url_keep_entities(text, entities, url, short,
+            text, entities, pos = replace_url_keep_entities(text, entities, url, shown,
                                                             start=pos, return_pos=True)
             if pos < 0:
                 break
@@ -545,11 +550,11 @@ async def post_amazon_product(context, uid: int, task: dict, product: dict, lang
     title    = (product.get("title") or "").strip()
     title_key = normalise_caption(title)
 
-    if cfg.get("dup_check", True):
-        for k in ("a:" + asin if asin else "", "t:" + title_key if title_key else ""):
-            dup, when = is_duplicate(uid, tid, k)
-            if dup:
-                return "duplicate", f"{title[:55] or asin} — {when}", ""
+    dup_keys = (("a:" + asin if asin else ""), ("t:" + title_key if title_key else "")) \
+        if cfg.get("dup_check", True) else ()
+    ok, when = claim_posted(uid, tid, *dup_keys)
+    if not ok:
+        return "duplicate", f"{title[:55] or asin} — {when}", ""
 
     allow_card = limits(uid)["card"]
     card_on    = allow_card and bool((cfg.get("card") or {}).get("enabled"))
@@ -580,11 +585,10 @@ async def post_amazon_product(context, uid: int, task: dict, product: dict, lang
                           dict(chat_id=channel, text=caption, parse_mode=ParseMode.HTML,
                                disable_web_page_preview=True, reply_markup=markup,
                                disable_notification=silent))
-        if cfg.get("dup_check", True):
-            mark_posted(uid, tid, "a:" + asin if asin else "", "t:" + title_key if title_key else "")
         log_post(uid, tid, "amazon", asin, title)
         return "posted", title or asin, note
     except Exception as e:
+        release_posted(uid, tid, *dup_keys)
         logger.error(f"Post fail {uid}/{tid}/{asin}: {e}")
         return "error", _friendly_error(e, lang), ""
 
@@ -615,8 +619,8 @@ async def post_other(context, uid: int, task: dict, payload: dict, lang: str = "
 
     dup_key = _other_dup_key(payload) if cfg.get("dup_check", True) else ""
     if dup_key:
-        dup, when = is_duplicate(uid, tid, dup_key)
-        if dup:
+        ok, when = claim_posted(uid, tid, dup_key)
+        if not ok:
             return "duplicate", tr(lang, f"non-Amazon post — {when} ago", f"non-Amazon post — {when} pehle")
 
     body_html = entities_to_html(text, entities) if text else ""
@@ -655,17 +659,17 @@ async def post_other(context, uid: int, task: dict, payload: dict, lang: str = "
 
         else:
             if not body_html.strip():
+                release_posted(uid, tid, dup_key)
                 return "error", tr(lang, "empty post", "khali post")
             await deliver(context.bot.send_message,
                           dict(chat_id=channel, text=wrap_plain_post(body_html, cfg, has_image=False),
                                parse_mode=ParseMode.HTML, disable_web_page_preview=True,
                                reply_markup=build_final_markup(cfg), disable_notification=silent))
 
-        if dup_key:
-            mark_posted(uid, tid, dup_key)
         log_post(uid, tid, "other", "", (text or "")[:80])
         return "posted", "non-Amazon post"
     except Exception as e:
+        release_posted(uid, tid, dup_key)
         logger.error(f"post_other fail ({uid}/{tid}): {e}")
         return "error", _friendly_error(e, lang)
 
@@ -871,9 +875,10 @@ async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str
             # Single product + data nahi mila → original text user ke tag ke saath
             if len(products) == 1 and not posted and nodata:
                 asin = products[0]["asin"]
-                if cfg.get("dup_check", True):
-                    dup, when = is_duplicate(uid, task["id"], "a:" + asin)
-                    if dup:
+                fb_key = ("a:" + asin) if cfg.get("dup_check", True) else ""
+                if fb_key:
+                    ok, when = claim_posted(uid, task["id"], fb_key)
+                    if not ok:
                         await _edit_or_notify(wait_msg, notify,
                                               tr(lang, f"⚠️ <b>Already posted</b> ({when} ago) — skipped.",
                                                  f"⚠️ <b>Pehle post ho chuka hai</b> ({when} pehle) — skip kiya."),
@@ -888,8 +893,6 @@ async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str
                                        parse_mode=ParseMode.HTML, disable_web_page_preview=True,
                                        reply_markup=build_final_markup(cfg, asin=asin),
                                        disable_notification=cfg.get("silent", True)))
-                    if cfg.get("dup_check", True):
-                        mark_posted(uid, task["id"], "a:" + asin)
                     log_post(uid, task["id"], "amazon", asin, cp[:80])
                     await _edit_or_notify(
                         wait_msg, notify,
@@ -900,6 +903,7 @@ async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str
                            "original text aapke affiliate link ke saath bheja.") + footer,
                         parse_mode=ParseMode.HTML, disable_web_page_preview=True)
                 except Exception as e:
+                    release_posted(uid, task["id"], fb_key)
                     await _edit_or_notify(wait_msg, notify,
                                           tr(lang, "❌ <b>Post failed!</b>\n", "❌ <b>Post nahi hua!</b>\n")
                                           + esc(_friendly_error(e, lang)), parse_mode=ParseMode.HTML)

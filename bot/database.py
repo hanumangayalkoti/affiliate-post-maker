@@ -92,6 +92,69 @@ def mark_posted(user_id: int, task_id: int, *keys):
         logger.error(f"Mark posted error: {e}")
 
 
+class _Taken(Exception):
+    """claim_posted ke andar — koi key pehle se (window ke andar) li hui hai."""
+
+
+def claim_posted(user_id: int, task_id: int, *keys):
+    """
+    Duplicate check + mark EK SAATH, database mein atomic tareeke se.
+    Returns (True, None) agar ye post karne ka haq mila, warna (False, "2h").
+
+    Pehle check aur mark alag-alag the, aur beech mein photo download + card +
+    send mein kuch second lagte the. Usi beech same product ka doosra message
+    aata (bot ek saath kai message chalata hai) to dono check pass kar jaate aur
+    product do baar post ho jaata. Ab jo pehle "claim" karega wahi post karega.
+    Post fail ho to release_posted() se claim wapas lo.
+    """
+    keys = [k for k in keys if k]
+    if not keys:
+        return True, None
+    now = utcnow()
+    cutoff = now - timedelta(hours=DUPLICATE_WINDOW_HOURS)
+    taken_at = None
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                for k in keys:
+                    cur.execute(
+                        """
+                        INSERT INTO seen_posts (user_id, title_key, posted_at)
+                        VALUES (%s, %s, %s)
+                        ON CONFLICT (user_id, title_key) DO UPDATE SET posted_at = EXCLUDED.posted_at
+                        WHERE seen_posts.posted_at < %s
+                        RETURNING posted_at
+                        """,
+                        (user_id, _key(task_id, k), now, cutoff),
+                    )
+                    if cur.fetchone() is None:
+                        cur.execute("SELECT posted_at FROM seen_posts WHERE user_id = %s AND title_key = %s",
+                                    (user_id, _key(task_id, k)))
+                        row = cur.fetchone()
+                        taken_at = row[0] if row else now
+                        raise _Taken()      # rollback — baaki keys bhi claim na hon
+    except _Taken:
+        return False, _human_gap(taken_at)
+    except Exception as e:
+        logger.error(f"Claim post error: {e}")
+        return True, None                   # DB gadbad pe posting mat roko
+    return True, None
+
+
+def release_posted(user_id: int, task_id: int, *keys):
+    """Post fail hui — claim hatao taaki agli baar dobara try ho sake."""
+    keys = [k for k in keys if k]
+    if not keys:
+        return
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM seen_posts WHERE user_id = %s AND title_key = ANY(%s)",
+                            (user_id, [_key(task_id, k) for k in keys]))
+    except Exception as e:
+        logger.error(f"Release post error: {e}")
+
+
 def cleanup_old_entries():
     try:
         cutoff = utcnow() - timedelta(hours=CLEANUP_AFTER_HOURS)
