@@ -196,6 +196,10 @@ async def dm_user(bot, uid: int, text: str, **kwargs):
 
 
 async def _edit_or_notify(wait_msg, notify, text, **kwargs):
+    footer = getattr(notify, "footer", "")
+    if footer and footer not in text:
+        text += footer                       # task / channel / tag har reply mein
+        kwargs.setdefault("parse_mode", ParseMode.HTML)
     if wait_msg:
         try:
             await wait_msg.edit_text(text + SELF_MARKER, **kwargs)
@@ -932,6 +936,25 @@ async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str
     cfg  = task["cfg"]
     tname = task_name(task, lang)
 
+    channel = str(cfg.get("channel", "")).strip()
+    tag     = cfg.get("tag", "")
+    shown   = chan(cfg.get("channel_title"), cfg.get("channel_username"), esc(channel) or "—")
+    # HAR reply (post hua / skip / duplicate / limit / fail) ke neeche: kaunsa task,
+    # kis channel pe, kaunsa Amazon tag. Ek Draft kai accounts ka ho sakta hai —
+    # isse saaf dikhta hai ki reply kiske task ka hai.
+    footer = (f"\n📋 {esc(tname)} → 📢 {shown}"
+              + (f"\n🏷️ Tag: <code>{esc(tag)}</code>" if tag else "") + source_tag)
+    footer_plain = footer
+
+    _send_notify = notify
+
+    async def notify(text, **kwargs):
+        if footer not in text:
+            text += footer
+        kwargs.setdefault("parse_mode", ParseMode.HTML)
+        return await _send_notify(text, **kwargs)
+    notify.footer = footer           # _edit_or_notify bhi yahi footer lagata hai
+
     if msg.caption is not None:
         raw_plain, raw_entities = msg.caption or "", list(msg.caption_entities or [])
         has_photo = True
@@ -972,14 +995,6 @@ async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str
                         f"⏭️ Skip — <b>{esc(tname)}</b> mein sirf Amazon posts jaati hain."),
                      parse_mode=ParseMode.HTML)
         return
-
-    channel = str(cfg.get("channel", "")).strip()
-    tag     = cfg.get("tag", "")
-    shown   = chan(cfg.get("channel_title"), cfg.get("channel_username"), channel)
-    # Amazon post ki report mein wo tag bhi dikhe jisse post hui
-    footer_plain = f"\n📋 {esc(tname)} → 📢 {shown}" + source_tag
-    tag_line = f"\n🏷️ Tag: <code>{esc(tag)}</code>" if tag else ""
-    footer  = f"\n📋 {esc(tname)} → 📢 {shown}" + tag_line + source_tag
 
     left = posts_left_today(uid, task["id"])
     if left is not None and left <= 0:
