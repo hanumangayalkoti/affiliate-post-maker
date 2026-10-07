@@ -318,6 +318,7 @@ def task_text(uid: int, task: dict, lang: str) -> str:
         f"🔍 {tr(lang, 'Posts', 'Posts')}: {' + '.join(posts)}",
         f"♻️ {tr(lang, 'Duplicate check', 'Duplicate check')}: {_onoff(c.get('dup_check', True))}",
         f"🚫 @User & TG Link: {_onoff(c.get('strip_promo', True))}",
+        f"📉 Discount Filter: {disc_label(c, lang)}",
         f"🎨 Image Card: {card_line}",
         f"💧 Watermark: {_onoff(wm.get('enabled') and wm.get('text'))}",
     ]
@@ -351,6 +352,7 @@ def task_kb(uid: int, task: dict, lang: str) -> InlineKeyboardMarkup:
          btn("🔚 Footer", callback_data=f"t:{tid}:hf:footer")],
         [btn(f"♻️ Duplicate {_onoff(c.get('dup_check', True))}", callback_data=f"t:{tid}:dup"),
          btn(f"🔔 {tr(lang, 'Notification', 'Notification')}", callback_data=f"t:{tid}:silent")],
+        [btn(f"📉 Discount Filter — {disc_label(c, lang)}", callback_data=f"t:{tid}:disc")],
     ]
     # Pause / Resume chhota — Search Links ke bagal mein (2×2 jaisa)
     if task["paused"]:
@@ -509,6 +511,55 @@ def promo_text(task, lang):
               "<b>ON</b> → doosre channels ke <b>@username</b> aur <b>Telegram links</b> (t.me…) post se "
               "hat jaate hain, \"Join @xyz for more\" jaisi line bhi. Aapka apna Draft / Destination "
               "channel kabhi nahi hatta.\n<b>OFF</b> → caption mein jaise hain waise rahenge.")
+
+
+# ── Discount Filter (sirf Amazon) ────────────────────────────────────────
+DISCOUNT_OPTIONS = (0, 10, 20, 30, 40, 50, 60, 70, 80)
+
+
+def min_discount(cfg: dict) -> int:
+    try:
+        v = int(cfg.get("min_discount") or 0)
+    except (TypeError, ValueError):
+        return 0
+    return v if 0 < v < 100 else 0
+
+
+def disc_label(cfg: dict, lang: str) -> str:
+    v = min_discount(cfg)
+    return f"✅ {v}%+" if v else "❌ OFF"
+
+
+def disc_text(task, lang):
+    v = min_discount(task["cfg"])
+    status = f"✅ {v}% {tr(lang, 'or more', 'ya zyada')}" if v else "❌ OFF"
+    return tr(lang,
+              f"📉 <b>Discount Filter</b> — {esc(tname(task, lang))}\n\n"
+              f"Status: <b>{status}</b>\n\n"
+              "Only for <b>Amazon</b> links. An Amazon deal with a smaller discount than this is "
+              "<b>skipped</b> — not posted, no daily limit used.\n"
+              "• Non-Amazon posts are never filtered here.\n"
+              "• If Amazon gives no product data, the deal is posted (so nothing is missed).\n"
+              "• MINIMAL mode: posted if at least one product in the post passes.\n\n"
+              "<i>Choose the minimum discount:</i>",
+              f"📉 <b>Discount Filter</b> — {esc(tname(task, lang))}\n\n"
+              f"Status: <b>{status}</b>\n\n"
+              "Sirf <b>Amazon</b> links pe. Jis Amazon deal ka discount isse kam hai wo "
+              "<b>skip</b> hogi — post nahi hogi, daily limit bhi nahi kategi.\n"
+              "• Non-Amazon posts pe ye filter nahi lagta.\n"
+              "• Amazon se product ka data na mile to deal post hogi (koi deal miss na ho).\n"
+              "• MINIMAL mode: post ka koi bhi ek product pass kare to post hogi.\n\n"
+              "<i>Kam se kam kitna discount chahiye, chunein:</i>")
+
+
+def disc_kb(task, lang):
+    tid, cur = task["id"], min_discount(task["cfg"])
+    opts = [btn(("✔️ " if v == cur else "") + (f"{v}%+" if v else "OFF"),
+                GREEN if v == cur else "", callback_data=f"t:{tid}:disc:{v}")
+            for v in DISCOUNT_OPTIONS]
+    rows = [opts[i:i + 3] for i in range(0, len(opts), 3)]
+    rows.append(back_row(tid, lang))
+    return InlineKeyboardMarkup(rows)
 
 
 def toggle_kb(task, action, on, lang, on_label=None, off_label=None):
@@ -815,6 +866,17 @@ async def handle_task_callback(query, context, uid: int, data: str) -> bool:
     if act == "":
         context.user_data.pop("action", None)
         await show(query, context, task_text(uid, task, lang), task_kb(uid, task, lang))
+        return True
+
+    if act == "disc":
+        if arg.isdigit() and int(arg) in DISCOUNT_OPTIONS:
+            old = min_discount(cfg)
+            cfg["min_discount"] = int(arg)
+            save()
+            if old != int(arg):
+                await query.answer(tr(lang, f"📉 Discount Filter: {disc_label(cfg, lang)}",
+                                      f"📉 Discount Filter: {disc_label(cfg, lang)}"))
+        await show(query, context, disc_text(task, lang), disc_kb(task, lang))
         return True
 
     if act == "card":
@@ -1256,6 +1318,7 @@ def config_text(uid: int, task: dict, lang: str) -> str:
              f"♻️ Duplicate: {on(c.get('dup_check', True))}",
              f"🚫 @User & TG Link: {on(c.get('strip_promo', True))}",
              f"🔗 Search Links: {on(c.get('search_links'))}",
+             f"📉 Discount Filter: {disc_label(c, lang)}",
              f"🔔 Notification: {'🔕 Silent' if c.get('silent', True) else '🔔 Loud'}\n"]
 
     f = c.get("amz_fields", {})

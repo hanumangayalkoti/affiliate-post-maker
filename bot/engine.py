@@ -1031,10 +1031,20 @@ async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str
                 parse_mode=ParseMode.HTML)
             return
 
+        md = _min_discount(cfg)
+
         if products and not cfg.get("amz_detailed", True):
             # MINIMAL — original caption, ek hi post (kitne bhi product links hon)
             fetched = await get_products_by_asins([p["asin"] for p in products])
             live = [fetched[p["asin"]] for p in products if p["asin"] in fetched]
+            # Discount Filter: koi bhi ek product pass kare to post. Kisi product ka
+            # data hi na mile to bhi post (deal miss na ho) — skip sirf tab jab saare
+            # products ka discount pata hai aur sab kam hain.
+            if md and live and len(live) == len(products) and all(_disc(p) < md for p in live):
+                best = max(_disc(p) for p in live)
+                await _edit_or_notify(wait_msg, notify, _low_discount_text(lang, best, md),
+                                      parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+                return
             status, detail, n = await post_amazon_original(
                 context, uid, task, msg, raw_plain, raw_entities, amazon_urls, products, live, lang)
             if status == "posted":
@@ -1066,6 +1076,19 @@ async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str
             live = [fetched[p["asin"]] for p in products if p["asin"] in fetched]
             live.sort(key=lambda x: int(x.get("discount_pct") or 0), reverse=True)
             nodata = [p["asin"] for p in products if p["asin"] not in fetched]
+            # Discount Filter (sirf Amazon): har product alag — kam discount wala skip
+            low = [p for p in live if md and _disc(p) < md]
+            live = [p for p in live if p not in low]
+
+            if low and not live and not nodata:
+                if len(low) == 1:
+                    text = _low_discount_text(lang, _disc(low[0]), md, low[0].get("title") or "")
+                else:
+                    text = tr(lang, f"⏭️ <b>Skipped</b> — all {len(low)} deals have less than {md}% off.",
+                              f"⏭️ <b>Skip</b> — saari {len(low)} deals ka discount {md}% se kam hai.")
+                await _edit_or_notify(wait_msg, notify, text, parse_mode=ParseMode.HTML,
+                                      disable_web_page_preview=True)
+                return
 
             for i, prod in enumerate(live):
                 status, detail, n = await post_amazon_product(context, uid, task, prod, lang)
@@ -1141,6 +1164,11 @@ async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str
                                 f"⚠️ {len(nodata)} ka data Amazon se nahi mila"))
             if errors:
                 lines.append(f"❌ {len(errors)} — {esc(errors[0])}")
+            if low:
+                lines.append(tr(lang, f"📉 {len(low)} skipped — discount below {md}%:",
+                                f"📉 {len(low)} skip — discount {md}% se kam:"))
+                for p in low[:5]:
+                    lines.append(f"   • {esc((p.get('title') or p.get('asin') or '')[:40])} — {_disc(p)}%")
             if searches:
                 lines.append(tr(lang, f"🚫 {len(searches)} search pages skipped",
                                 f"🚫 {len(searches)} search page chhod diye"))
@@ -1170,6 +1198,31 @@ async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str
     payload = _msg_payload(msg, cp, ce)
     status, detail = await post_other(context, uid, task, payload, lang)
     await _report_other(None, notify, status, detail, lang, footer_plain)
+
+
+def _min_discount(cfg: dict) -> int:
+    """Task ka Discount Filter (0 = OFF)."""
+    try:
+        v = int(cfg.get("min_discount") or 0)
+    except (TypeError, ValueError):
+        return 0
+    return v if 0 < v < 100 else 0
+
+
+def _disc(product: dict) -> int:
+    try:
+        return int(product.get("discount_pct") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _low_discount_text(lang: str, have: int, need: int, title: str = "") -> str:
+    name = f"\n🛍️ {esc(title[:60])}" if title else ""
+    return tr(lang,
+              f"⏭️ <b>Skipped — discount too low</b>{name}\n📉 Discount: <b>{have}%</b>  "
+              f"(filter: {need}%+)\n<i>Change it in /tasks → 📉 Discount Filter.</i>",
+              f"⏭️ <b>Skip — discount kam hai</b>{name}\n📉 Discount: <b>{have}%</b>  "
+              f"(filter: {need}%+)\n<i>/tasks → 📉 Discount Filter se badal sakte hain.</i>")
 
 
 async def _report_other(wait_msg, notify, status, detail, lang, footer, tagged=False):

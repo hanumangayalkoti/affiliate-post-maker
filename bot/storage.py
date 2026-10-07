@@ -97,6 +97,7 @@ DEFAULT_TASK = {
     "allow_other":      True,    # Non-Amazon posts jaayengi?
     "dup_check":        True,    # 24 ghante mein same post dobara nahi
     "strip_promo":      True,    # doosre channel ke @username / Telegram links hatao
+    "min_discount":     0,       # Amazon Discount Filter — isse kam % wali deal skip (0 = OFF)
     "search_links":     False,
     "amz_detailed":     True,
     "amz_fields":       DEFAULT_AMZ_FIELDS,
