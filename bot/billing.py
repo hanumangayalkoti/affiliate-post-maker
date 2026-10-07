@@ -298,7 +298,7 @@ def build_web_app(application) -> web.Application:
         uid, tier, days, new_exp, amount, old_tier = res
         try:
             await after_paid(application, uid, tier, new_exp, "Razorpay", f"₹{amount // 100}", old_tier,
-                             amount_paise=amount, payment_ref=f"rzp:{receipt}")
+                             amount_paise=amount, payment_ref=f"rzp:{receipt or link_id or payment_id}")
         except Exception as e:
             logger.error(f"After-paid notify fail: {e}")
         return web.json_response({"status": "ok"})
