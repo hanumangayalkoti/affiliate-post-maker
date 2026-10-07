@@ -326,6 +326,85 @@ async def replace_amazon_links(text: str, entities: list, urls: list, tag: str):
     return text, fixed
 
 
+# =============================================================================
+# DOOSRE CHANNEL KA PROMO HATAO — @username aur Telegram links
+# =============================================================================
+_TG_LINK_RE = re.compile(r"(?:https?://)?(?:www\.)?(?:t|telegram)\.(?:me|dog)/\S*", re.IGNORECASE)
+_MENTION_RE = re.compile(r"(?<![\w@/.])@[A-Za-z][A-Za-z0-9_]{3,31}\b")
+# @username ke saath ye shabd hon to poori line promo hai ("Join @xyz for more")
+_PROMO_WORDS_RE = re.compile(
+    r"\b(join|follow|subscribe|channel|group|credit|credits|via|source|deal\s*by|posted\s*by|"
+    r"share|more\s*deals|for\s*more)\b", re.IGNORECASE)
+
+
+def _delete_spans(text: str, entities: list, spans: list):
+    """text ke kuch hisse (python index) hatao aur entity offsets theek karo."""
+    spans = sorted((max(0, s), min(len(text), e)) for s, e in spans if e > s)
+    merged = []
+    for s, e in spans:
+        if merged and s <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+        else:
+            merged.append((s, e))
+    if not merged:
+        return text, list(entities or [])
+    spans16 = [(_py_to_utf16_len(text[:s]), _py_to_utf16_len(text[:e])) for s, e in merged]
+
+    def shift(x):
+        cut = 0
+        for s, e in spans16:
+            if x >= e:
+                cut += e - s
+            elif x > s:
+                cut += x - s
+        return x - cut
+
+    new_ents = []
+    for ent in (entities or []):
+        a, b = shift(ent.offset), shift(ent.offset + ent.length)
+        if b > a:
+            new_ents.append(_clone_ent(ent, offset=a, length=b - a))
+    parts, last = [], 0
+    for s, e in merged:
+        parts.append(text[last:s])
+        last = e
+    parts.append(text[last:])
+    return "".join(parts), new_ents
+
+
+def strip_promo(text: str, entities: list):
+    """
+    Doosre channel ka promo hatao: Telegram link wali poori line (dikhne wala
+    t.me link ho ya kisi text ke peeche chhupa), aur har @username.
+    Baaki caption ("Loot Free", "Apply Coupon"...) jaisa tha waisa rehta hai.
+    """
+    if not text:
+        return text, list(entities or [])
+    entities = list(entities or [])
+    tg_ranges = [(e.offset, e.offset + e.length) for e in entities
+                 if str(getattr(e.type, "value", e.type)) == "text_link" and _TG_LINK_RE.search(e.url or "")]
+    spans, pos = [], 0
+    for line in text.split("\n"):
+        start, end = pos, pos + len(line)
+        s16 = _py_to_utf16_len(text[:start])
+        e16 = s16 + _py_to_utf16_len(line)
+        promo_mention = _MENTION_RE.search(line) and _PROMO_WORDS_RE.search(line)
+        if (_TG_LINK_RE.search(line) or promo_mention
+                or any(a < e16 and b > s16 for a, b in tg_ranges)):
+            spans.append((start, end + 1))          # newline samet poori line
+        pos = end + 1
+    for m in _MENTION_RE.finditer(text):
+        s = m.start() - 1 if m.start() > 0 and text[m.start() - 1] == " " else m.start()
+        spans.append((s, m.end()))
+    text, entities = _delete_spans(text, entities, spans)
+    # 2 se zyada khaali lines → 1 khaali line; shuru/aakhir ki khaali jagah hatao
+    spans = [(m.start() + 2, m.end()) for m in re.finditer(r"\n{3,}", text)]
+    text, entities = _delete_spans(text, entities, spans)
+    lead = len(text) - len(text.lstrip())
+    trail = len(text.rstrip())
+    return _delete_spans(text, entities, [(0, lead), (trail, len(text))])
+
+
 def remove_footer(plain_text: str, entities: list):
     lines = plain_text.split('\n')
     while lines and not lines[-1].strip():
@@ -593,6 +672,73 @@ async def post_amazon_product(context, uid: int, task: dict, product: dict, lang
         return "error", _friendly_error(e, lang), ""
 
 
+async def post_amazon_original(context, uid: int, task: dict, msg, raw_plain: str, raw_entities: list,
+                               amazon_urls: list, products: list, live: list, lang: str = "hi"):
+    """
+    MINIMAL mode — original post ka caption hi jaata hai ("Loot Free", "Apply
+    Coupon"...). Amazon links pe user ka tag, doosre channel ke @username aur
+    Telegram links hate hue. Photo: Image Card (ON ho to) → Amazon photo →
+    original post ki photo. Returns (status, detail, note).
+    """
+    cfg     = task["cfg"]
+    tid     = task["id"]
+    tag     = cfg.get("tag", "")
+    channel = str(cfg.get("channel", "")).strip()
+    silent  = cfg.get("silent", True)
+    asins   = [p["asin"] for p in products]
+
+    dup_keys = tuple("a:" + a for a in asins) if cfg.get("dup_check", True) else ()
+    ok, when = claim_posted(uid, tid, *dup_keys)
+    if not ok:
+        return "duplicate", when, ""
+
+    cp, ce = remove_footer(raw_plain, raw_entities)
+    cp, ce = await replace_amazon_links(cp, ce, amazon_urls, tag)
+    cp, ce = strip_promo(cp, ce)
+    body = entities_to_html(cp, ce) if cp.strip() else ""
+
+    best = live[0] if live else None
+    img_bytes, used_card, src = None, False, ""
+    if best and best.get("image_url"):
+        raw = await _download_image(best["image_url"])
+        if raw:
+            img_bytes, used_card = await make_post_image(raw, best, cfg, limits(uid)["card"])
+            src = "Image Card" if used_card else "Amazon photo"
+    if img_bytes is None and msg is not None and msg.photo:
+        raw = await _get_photo_bytes(context.bot, msg.photo[-1].file_id)
+        if raw and _wm_on(cfg):
+            raw = await asyncio.to_thread(apply_watermark, raw, cfg.get("watermark", {}),
+                                          (cfg.get("card") or {}).get("font", "poppins"))
+        img_bytes, src = raw, tr(lang, "original photo", "original photo")
+    if img_bytes and _wm_on(cfg) and not used_card and src != "original photo":
+        src += " + Watermark"
+
+    markup = build_final_markup(cfg, asin=asins[0] if asins else "")
+    try:
+        if img_bytes:
+            caption = wrap_plain_post(body, cfg, has_image=True) if body else None
+            await deliver(context.bot.send_photo,
+                          dict(chat_id=channel, caption=caption,
+                               parse_mode=ParseMode.HTML if caption else None,
+                               reply_markup=markup, disable_notification=silent),
+                          photo_bytes=img_bytes, photo_name=f"{asins[0] if asins else 'post'}.jpg")
+        else:
+            if not body.strip():
+                release_posted(uid, tid, *dup_keys)
+                return "error", tr(lang, "empty post", "khali post"), ""
+            await deliver(context.bot.send_message,
+                          dict(chat_id=channel, text=wrap_plain_post(body, cfg, has_image=False),
+                               parse_mode=ParseMode.HTML, disable_web_page_preview=True,
+                               reply_markup=markup, disable_notification=silent))
+        title = ((best or {}).get("title") or cp or "")[:80]
+        log_post(uid, tid, "amazon", asins[0] if asins else "", title)
+        return "posted", title, src
+    except Exception as e:
+        release_posted(uid, tid, *dup_keys)
+        logger.error(f"Original post fail {uid}/{tid}: {e}")
+        return "error", _friendly_error(e, lang), ""
+
+
 def _other_dup_key(payload: dict) -> str:
     """Non-Amazon duplicate — caption ke text se; text na ho to photo/video ki ID se."""
     k = normalise_caption(payload.get("text") or "")
@@ -840,6 +986,27 @@ async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str
                    f"🚫 <b>Skip!</b> Sirf Amazon search/deals page mile ({len(searches)}).\n"
                    "<i>Ye bhi post karne hain to task settings mein 'Search Links' ON karein.</i>"),
                 parse_mode=ParseMode.HTML)
+            return
+
+        if products and not cfg.get("amz_detailed", True):
+            # MINIMAL — original caption, ek hi post (kitne bhi product links hon)
+            fetched = await get_products_by_asins([p["asin"] for p in products])
+            live = [fetched[p["asin"]] for p in products if p["asin"] in fetched]
+            status, detail, n = await post_amazon_original(
+                context, uid, task, msg, raw_plain, raw_entities, amazon_urls, products, live, lang)
+            if status == "posted":
+                text = tr(lang, "✅ <b>Posted with the original caption!</b>",
+                          "✅ <b>Original caption ke saath post ho gaya!</b>")
+                if n:
+                    text += f"\n🖼️ {esc(n)}"
+                text += footer
+            elif status == "duplicate":
+                text = tr(lang, f"♻️ <b>Already posted</b> ({esc(detail)} ago) — skipped.",
+                          f"♻️ <b>Pehle post ho chuka hai</b> ({esc(detail)} pehle) — skip kiya.")
+            else:
+                text = tr(lang, "❌ <b>Post failed!</b>\n", "❌ <b>Post nahi hua!</b>\n") + esc(detail)
+            await _edit_or_notify(wait_msg, notify, text, parse_mode=ParseMode.HTML,
+                                  disable_web_page_preview=True)
             return
 
         if products:
