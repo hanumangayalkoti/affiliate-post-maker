@@ -936,25 +936,6 @@ async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str
     cfg  = task["cfg"]
     tname = task_name(task, lang)
 
-    channel = str(cfg.get("channel", "")).strip()
-    tag     = cfg.get("tag", "")
-    shown   = chan(cfg.get("channel_title"), cfg.get("channel_username"), esc(channel) or "—")
-    # HAR reply (post hua / skip / duplicate / limit / fail) ke neeche: kaunsa task,
-    # kis channel pe, kaunsa Amazon tag. Ek Draft kai accounts ka ho sakta hai —
-    # isse saaf dikhta hai ki reply kiske task ka hai.
-    footer = (f"\n📋 {esc(tname)} → 📢 {shown}"
-              + (f"\n🏷️ Tag: <code>{esc(tag)}</code>" if tag else "") + source_tag)
-    footer_plain = footer
-
-    _send_notify = notify
-
-    async def notify(text, **kwargs):
-        if footer not in text:
-            text += footer
-        kwargs.setdefault("parse_mode", ParseMode.HTML)
-        return await _send_notify(text, **kwargs)
-    notify.footer = footer           # _edit_or_notify bhi yahi footer lagata hai
-
     if msg.caption is not None:
         raw_plain, raw_entities = msg.caption or "", list(msg.caption_entities or [])
         has_photo = True
@@ -968,6 +949,29 @@ async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str
     all_urls    = extract_urls(raw_plain) + hidden_link_urls(raw_entities)
     # Third-party short links (amzn-to.co jaise) bhi kholke dekhte hain
     amazon_urls = await get_amazon_urls_deep(all_urls)
+
+    channel = str(cfg.get("channel", "")).strip()
+    tag     = cfg.get("tag", "")
+    shown   = chan(cfg.get("channel_title"), cfg.get("channel_username"), esc(channel) or "—")
+    # HAR reply (post hua / skip / duplicate / limit / fail) ke neeche: kaunsa task,
+    # kis channel pe. Amazon link ho to kaunsa tag laga; Non-Amazon ho to saaf likho
+    # ki Non-Amazon link hai (uspe tag nahi lagta). Ek Draft kai accounts ka ho sakta
+    # hai — isse saaf dikhta hai ki reply kiske task ka hai.
+    if amazon_urls:
+        kind_line = f"\n🏷️ Tag: <code>{esc(tag)}</code>" if tag else ""
+    else:
+        kind_line = tr(lang, "\n🔗 Non-Amazon link", "\n🔗 Non-Amazon link")
+    footer = f"\n📋 {esc(tname)} → 📢 {shown}" + kind_line + source_tag
+    footer_plain = footer
+
+    _send_notify = notify
+
+    async def notify(text, **kwargs):
+        if footer not in text:
+            text += footer
+        kwargs.setdefault("parse_mode", ParseMode.HTML)
+        return await _send_notify(text, **kwargs)
+    notify.footer = footer           # _edit_or_notify bhi yahi footer lagata hai
 
     if not raw_plain.strip() and not all_urls and not has_photo and not (
             msg.document or msg.video or msg.animation or msg.video_note):
