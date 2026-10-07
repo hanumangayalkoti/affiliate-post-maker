@@ -452,6 +452,9 @@ def _build_utf16_map(text: str) -> list:
     return mapping
 
 
+_LOOKS_LIKE_URL = re.compile(r"^\s*(?:https?://|www\.)\S+\s*$", re.I)
+
+
 def entities_to_html(text: str, entities: list) -> str:
     if not entities:
         return html_lib.escape(text)
@@ -478,6 +481,10 @@ def entities_to_html(text: str, entities: list) -> str:
         if e > len(text) or s >= len(text) or e <= s:
             continue
         etype = str(getattr(ent.type, "value", ent.type))
+        if etype == "text_link" and _LOOKS_LIKE_URL.match(text[s:e]):
+            # Dikhne wala text khud ek link hai — sada text rakho, Telegram khud link
+            # banayega aur tap pe seedha kholega ("Open Link?" wala sawaal nahi aayega)
+            continue
         if etype == "text_link":
             url = html_lib.escape(ent.url or "")
             open_tags[s]    = f'<a href="{url}"><b>' + open_tags[s]

@@ -182,14 +182,8 @@ def user_card(uid: int, seg: str = "all", page: int = 0):
     b = f"{uid}:{seg}:{page}"
     rows = [
         [btn("📋 Tasks dekho", BLUE, callback_data=f"adm:tk:{b}")],
-        [btn("+1 din", GREEN, callback_data=f"adm:d:{uid}:1:{seg}:{page}"),
-         btn("+7 din", GREEN, callback_data=f"adm:d:{uid}:7:{seg}:{page}"),
-         btn("+30 din", GREEN, callback_data=f"adm:d:{uid}:30:{seg}:{page}")],
-        [btn("−1 din", RED, callback_data=f"adm:d:{uid}:-1:{seg}:{page}"),
-         btn("−7 din", RED, callback_data=f"adm:d:{uid}:-7:{seg}:{page}"),
-         btn("−30 din", RED, callback_data=f"adm:d:{uid}:-30:{seg}:{page}")],
-        [btn("➕ Din jodo (likh ke)", callback_data=f"adm:ga:{b}"),
-         btn("➖ Din kaato (likh ke)", callback_data=f"adm:rd:{b}")],
+        [btn("🎁 Grant Days", GREEN, callback_data=f"adm:ga:{b}"),
+         btn("➖ Reduce Days", RED, callback_data=f"adm:rd:{b}")],
         [btn(("✔️ " if (u.get("tier") == k and is_active(uid, u) and not u.get("is_trial")) else "")
              + tier_label(k), callback_data=f"adm:t:{uid}:{k}:{seg}:{page}") for k in TIER_ORDER],
         [btn("⏹️ Plan khatam", RED, callback_data=f"adm:e:{b}"),
@@ -418,14 +412,34 @@ async def handle_admin_callback(query, context, uid: int, data: str) -> bool:
         await show(query, context, text, kb)
         return True
     if act in ("ga", "rd"):
-        context.user_data.update(action="adm_days", adm_target=target, adm_sign=1 if act == "ga" else -1,
+        # Grant / Reduce — jaldi wale number + apna number likhne ka option
+        grant = act == "ga"
+        sign = 1 if grant else -1
+        u = get_user(target) or {}
+        ask = (f"🎁 <b>Grant Days</b> — {_who(u)}\n📅 Abhi expiry: {fmt_date(u.get('expires_at'))}\n\n"
+               "Kitne din <b>jodne</b> hain? Neeche chunein ya apna number likhein.\n"
+               "🔔 <i>User ko message jayega.</i>" if grant else
+               f"➖ <b>Reduce Days</b> — {_who(u)}\n📅 Abhi expiry: {fmt_date(u.get('expires_at'))}\n\n"
+               "Kitne din <b>kaatne</b> hain? Neeche chunein ya apna number likhein.\n"
+               "🔕 <i>User ko koi message nahi jayega (silent).</i>")
+        quick = [btn(f"{'+' if grant else '−'}{n}", GREEN if grant else RED,
+                     callback_data=f"adm:d:{target}:{sign * n}:{seg}:{page}") for n in (1, 3, 7, 15, 30, 90)]
+        await show(query, context, ask, InlineKeyboardMarkup([
+            quick[:3], quick[3:],
+            [btn("✏️ Apna number likhein", callback_data=f"adm:{'gc' if grant else 'rc'}:{target}:{seg}:{page}")],
+            [btn("⬅️ Wapas", callback_data=f"adm:v:{target}:{seg}:{page}")],
+        ]))
+        return True
+    if act in ("gc", "rc"):
+        grant = act == "gc"
+        context.user_data.update(action="adm_days", adm_target=target, adm_sign=1 if grant else -1,
                                  adm_back=f"{seg}:{page}")
-        ask = ("➕ Kitne din <b>jodne</b> hain? Number bhejein (jaise <code>15</code>).\n"
-               "<i>User ko message jayega.</i>" if act == "ga" else
+        ask = ("🎁 Kitne din <b>jodne</b> hain? Number bhejein (jaise <code>45</code>).\n"
+               "🔔 <i>User ko message jayega.</i>" if grant else
                "➖ Kitne din <b>kaatne</b> hain? Number bhejein (jaise <code>5</code>).\n"
-               "<i>User ko koi message nahi jayega.</i>")
+               "🔕 <i>User ko koi message nahi jayega.</i>")
         await show(query, context, ask,
-                   InlineKeyboardMarkup([[btn("⬅️ Wapas", callback_data=f"adm:v:{target}:{seg}:{page}")]]))
+                   InlineKeyboardMarkup([[btn("⬅️ Wapas", callback_data=f"adm:{'ga' if grant else 'rd'}:{target}:{seg}:{page}")]]))
         return True
     if act == "d" and len(p) >= 4:
         try:
