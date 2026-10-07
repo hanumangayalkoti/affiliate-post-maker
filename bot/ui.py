@@ -96,12 +96,47 @@ def _uid(context):
     return getattr(context, "_user_id", None)
 
 
+_save_pending: set = set()
+
+
 def _save(context):
-    """Screen ke message IDs DB mein — bot restart ho tab bhi agla command purani screen saaf kare."""
+    """
+    Screen ke message IDs DB mein — bot restart ho tab bhi agla command purani
+    screen saaf kare. Background mein aur thoda ruk ke (0.5s) likhte hain: ek
+    screen ke kai messages ek hi write mein, aur DB ka kaam bot ko nahi rokta.
+    """
     uid = _uid(context)
-    if uid:
-        from storage import screen_ids_set
-        screen_ids_set(uid, [m for g in _trail(context) for m in g])
+    if not uid or uid in _save_pending:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    _save_pending.add(uid)
+
+    async def _later():
+        try:
+            await asyncio.sleep(0.5)
+            ids = [m for g in _trail(context) for m in g]   # likhte waqt ki taaza list
+            from storage import screen_ids_set
+            await loop.run_in_executor(None, screen_ids_set, uid, ids)
+        except Exception as e:
+            logger.error(f"Screen save fail ({uid}): {e}")
+        finally:
+            _save_pending.discard(uid)
+
+    loop.create_task(_later())
+
+
+async def _delete_many(bot, chat_id: int, ids: list):
+    """Purani screen ke messages saath-saath delete (ek-ek ka intezaar nahi)."""
+    async def one(mid):
+        try:
+            await bot.delete_message(chat_id, mid)
+        except Exception:
+            pass
+    for i in range(0, len(ids), 10):
+        await asyncio.gather(*(one(m) for m in ids[i:i + 10]))
 
 
 async def new_screen(context, bot, chat_id: int, user_msg_id: int = None):
@@ -109,23 +144,21 @@ async def new_screen(context, bot, chat_id: int, user_msg_id: int = None):
     Naya command aaya — pichli screen ke saare messages (bot ke jawab + user ke
     command) delete, aur naya group shuru. Sirf "screen" wale message jaate hain —
     reports (payment, post report, task bana...) kabhi track nahi hote, wo rehte hain.
-    Telegram 48 ghante se purane message delete nahi karne deta.
+
+    Delete BACKGROUND mein hota hai — naya jawab turant jaata hai, purani screen
+    uske saath-saath hat-ti hai. Telegram 48 ghante se purane message delete nahi karne deta.
     """
     trail = _trail(context)
     old = [m for g in trail[-KEEP_GROUPS:] for m in g]
     if not old and _uid(context):
-        from storage import screen_ids_get
-        old = screen_ids_get(_uid(context))     # restart ke baad memory khaali — DB se
+        from storage import screen_ids_get     # restart ke baad memory khaali — DB se
+        old = await asyncio.get_running_loop().run_in_executor(None, screen_ids_get, _uid(context))
     trail.clear()
     trail.append([user_msg_id] if user_msg_id else [])
     _save(context)
-    for mid in dict.fromkeys(old):
-        if mid == user_msg_id:
-            continue
-        try:
-            await bot.delete_message(chat_id, mid)
-        except Exception:
-            pass
+    old = [m for m in dict.fromkeys(old) if m != user_msg_id]
+    if old:
+        asyncio.get_running_loop().create_task(_delete_many(bot, chat_id, old))
 
 
 def track(context, msg):
