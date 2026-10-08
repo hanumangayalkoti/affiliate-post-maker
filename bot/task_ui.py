@@ -394,7 +394,7 @@ def task_text(uid: int, task: dict, lang: str) -> str:
         f"🏷️ {tr(lang, 'Affiliate Tag', 'Affiliate Tag')}: <code>{esc(c.get('tag') or '—')}</code>\n",
         f"🔍 {tr(lang, 'Posts', 'Posts')}: {' + '.join(posts)}",
         f"♻️ {tr(lang, 'Duplicate check', 'Duplicate check')}: {_onoff(c.get('dup_check', True))}",
-        f"🚫 @User &amp; TG Link: {_onoff(c.get('strip_promo', True))}",
+        f"🚫 Remove t.me link &amp; Username: {_onoff(c.get('strip_promo', True))}",
         f"🅱️ Bold Link: {_onoff(c.get('bold_links', True))}",
         f"📉 Discount Filter: {disc_label(c, lang)}",
         f"🎨 Image Card: {card_line}",
@@ -432,7 +432,6 @@ def task_kb(uid: int, task: dict, lang: str) -> InlineKeyboardMarkup:
         [btn(f"♻️ Duplicate {_onoff(c.get('dup_check', True))}", callback_data=f"t:{tid}:dup"),
          btn(f"🔔 {tr(lang, 'Notification', 'Notification')}", callback_data=f"t:{tid}:silent")],
         [btn(f"📉 Discount Filter — {disc_label(c, lang)}", callback_data=f"t:{tid}:disc")],
-        [btn(f"{_onoff(c.get('amazon_badge', True))} 🛒 Amazon Logo", callback_data=f"t:{tid}:badge")],
     ]
     # Pause / Resume chhota — Search Links ke bagal mein (2×2 jaisa)
     if task["paused"]:
@@ -442,7 +441,9 @@ def task_kb(uid: int, task: dict, lang: str) -> InlineKeyboardMarkup:
     rows.append([btn(f"🔗 Search Links {_onoff(c.get('search_links'))}", callback_data=f"t:{tid}:search"),
                  pause_btn])
     # Lamba naam — poori line, taaki text pura dikhe
-    rows.append([btn(f"{_onoff(c.get('strip_promo', True))} 🚫 @User & TG Link", callback_data=f"t:{tid}:promo"),
+    rows.append([btn(f"{_onoff(c.get('strip_promo', True))} 🚫 Remove t.me link and Username",
+                     callback_data=f"t:{tid}:promo")])
+    rows.append([btn(f"🛒 Amazon Logo {_onoff(c.get('amazon_badge', True))}", callback_data=f"t:{tid}:badge"),
                  btn(f"🅱️ Bold Link {_onoff(c.get('bold_links', True))}", callback_data=f"t:{tid}:bold")])
     if not (d and d["id"] == tid):
         rows.append([btn(tr(lang, "⭐ Make Default", "⭐ Default banayein"), callback_data=f"t:{tid}:def")])
@@ -629,12 +630,12 @@ def bold_text(task, lang):
 def promo_text(task, lang):
     on = task["cfg"].get("strip_promo", True)
     return tr(lang,
-              f"🚫 <b>@User &amp; TG Link</b> — {esc(tname(task, lang))}\n\n"
+              f"🚫 <b>Remove t.me link &amp; Username</b> — {esc(tname(task, lang))}\n\n"
               f"Status: <b>{'✅ ON' if on else '❌ OFF'}</b>\n\n"
               "<b>ON</b> → other channels' <b>@usernames</b> and <b>Telegram links</b> (t.me…) are removed "
               "from the post, including lines like \"Join @xyz for more\". Your own Draft / Destination "
               "channel is never removed.\n<b>OFF</b> → the caption keeps them as they are.",
-              f"🚫 <b>@User &amp; TG Link</b> — {esc(tname(task, lang))}\n\n"
+              f"🚫 <b>Remove t.me link &amp; Username</b> — {esc(tname(task, lang))}\n\n"
               f"Status: <b>{'✅ ON' if on else '❌ OFF'}</b>\n\n"
               "<b>ON</b> → doosre channels ke <b>@username</b> aur <b>Telegram links</b> (t.me…) post se "
               "hat jaate hain, \"Join @xyz for more\" jaisi line bhi. Aapka apna Draft / Destination "
@@ -1459,7 +1460,7 @@ def config_text(uid: int, task: dict, lang: str) -> str:
              f"🛍️ Amazon posts: {on(c.get('allow_amazon', True))}",
              f"📝 Non-Amazon posts: {on(c.get('allow_other', True))}",
              f"♻️ Duplicate: {on(c.get('dup_check', True))}",
-             f"🚫 @User &amp; TG Link: {on(c.get('strip_promo', True))}",
+             f"🚫 Remove t.me link &amp; Username: {on(c.get('strip_promo', True))}",
              f"🅱️ Bold Link: {on(c.get('bold_links', True))}",
              f"🔗 Search Links: {on(c.get('search_links'))}",
              f"📉 Discount Filter: {disc_label(c, lang)}",

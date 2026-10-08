@@ -710,7 +710,7 @@ async def post_amazon_product(context, uid: int, task: dict, product: dict, lang
 
 
 def _strip_if_on(text: str, entities: list, cfg: dict):
-    """Task mein "🚫 @User & TG Link" ON ho (default) tabhi promo hatao."""
+    """Task mein "🚫 Remove t.me link and Username" ON ho (default) tabhi promo hatao."""
     if not cfg.get("strip_promo", True):
         return text, list(entities or [])
     return strip_promo(text, entities, _own_handles(cfg))
