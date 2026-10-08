@@ -97,6 +97,7 @@ DEFAULT_TASK = {
     "allow_other":      True,    # Non-Amazon posts jaayengi?
     "dup_check":        True,    # 24 ghante mein same post dobara nahi
     "strip_promo":      True,    # doosre channel ke @username / Telegram links hatao
+    "bold_links":       True,    # post ke links bold dikhein
     "min_discount":     0,       # Amazon Discount Filter — isse kam % wali deal skip (0 = OFF)
     "search_links":     False,
     "amazon_badge":     True,    # Amazon post ki photo pe chhota 'available at amazon' logo

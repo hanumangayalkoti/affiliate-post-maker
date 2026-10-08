@@ -192,7 +192,8 @@ def build_amazon_caption(product: dict, short_link: str, cfg: dict,
         # Link bold, par <a href> ke BINA — Telegram khud link banata hai aur tap pe
         # seedha khulta hai. <a href> lagane pe Telegram har baar "Open Link?" poochta hai.
         shown = display_link(short_link) or short_link
-        link_line = f'🛒 <b>{_esc(shown)}</b>'
+        link_line = (f'🛒 <b>{_esc(shown)}</b>' if cfg.get("bold_links", True)
+                     else f'🛒 {_esc(shown)}')
 
     # Header / footer / link ki jagah pehle se reserve
     reserved = 0
