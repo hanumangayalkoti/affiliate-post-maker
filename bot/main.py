@@ -347,8 +347,6 @@ async def _user_command(fn, update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not uid:
         return
     msg = update.message
-    if is_new:
-        await _notify_new_user(context.bot, uid, update.effective_user)
     if is_blocked(uid):
         lang = get_lang(uid)
         await msg.reply_text("⛔ " + tr(lang, "Your access has been blocked.",
@@ -362,6 +360,9 @@ async def _user_command(fn, update: Update, context: ContextTypes.DEFAULT_TYPE):
             await referral.handle_start_arg(context.bot, uid, context.args[0])
         except Exception as e:
             logger.error(f"Referral start fail ({uid}): {e}")
+    if is_new:
+        # Referral judne ke BAAD — taaki admin ko "Referred by" sahi dikhe
+        await _notify_new_user(context.bot, uid, update.effective_user)
     await new_screen(context, context.bot, msg.chat_id, msg.message_id, command_name(msg.text))
     await task_ui.drop_picker(context, context.bot, msg.chat_id)     # 'Channel chunein' keyboard hatao
     prev = _drop_pending(context)

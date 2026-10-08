@@ -79,7 +79,8 @@ class FreshSettingsTest(unittest.TestCase):
         base = {"name": "T", "tag": "dk-21", "channel": "-1005", "channel_title": "Ch",
                 "allow_amazon": True, "allow_other": True, "amz_detailed": True}
         task = {"id": 1, "user_id": 7, "cfg": dict(base, **stale_cfg)}
-        engine.get_task = lambda tid, uid: {"id": tid, "user_id": uid, "cfg": dict(base, **fresh_cfg)}
+        engine.get_task = lambda tid, uid: {"id": tid, "user_id": uid, "cfg": dict(base, **fresh_cfg),
+                                            "paused": fresh_cfg.pop("_paused", False)}
         msg = types.SimpleNamespace(caption=None, text="Deal " + A1, entities=[], caption_entities=[],
                                     photo=None, document=None, video=None, animation=None, video_note=None)
         ctx = types.SimpleNamespace(bot=None)
@@ -100,6 +101,11 @@ class FreshSettingsTest(unittest.TestCase):
         for bit in ("Vaseline Lotion", "₹199", "MRP ₹850", "77% off", "Discount Filter 50%+", "pass",
                     "Image Card", "dk-21"):
             self.assertIn(bit, r)
+
+    def test_task_paused_while_waiting_is_skipped(self):
+        posted, replies = self.run_case({}, {"_paused": True}, 77)
+        self.assertEqual(posted, [])
+        self.assertIn("pause", replies[-1])
 
     def test_draft_gets_one_reply_not_two(self):
         _, replies = self.run_case({}, {}, 40, source_tag="\n📥 Draft: <b>D</b>")
