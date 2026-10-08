@@ -1086,6 +1086,13 @@ async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str
         # ho sakti hain (Discount Filter, buttons...) — taaza settings se chalo.
         fresh = get_task(task["id"], uid)
         if fresh:
+            if fresh.get("paused"):
+                # Post queue mein thi aur beech mein user ne task rok diya
+                await _edit_or_notify(wait_msg, notify,
+                                      tr(lang, f"⏸️ <b>Skipped</b> — {esc(tname)} is paused.",
+                                         f"⏸️ <b>Skip</b> — {esc(tname)} pause hai."),
+                                      parse_mode=ParseMode.HTML)
+                return
             task = fresh
             cfg = task["cfg"]
         md = _min_discount(cfg)
