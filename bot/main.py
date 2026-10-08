@@ -39,7 +39,7 @@ import faq
 import gate
 import task_ui
 import referral
-from alerts import notify_admins, who
+from alerts import notify_admins, who, user_card, users_line, now_ist
 from database import (
     cache_cleanup, post_log_cleanup, cleanup_old_entries, user_stats, posts_today, day_report_rows,
 )
@@ -252,7 +252,13 @@ async def after_gate(bot, uid: int):
                              "posts ruk jayengi.\n"
                              "👉 Aage: /tasks kholein aur Draft, Destination aur Amazon tag set karein."),
                           parse_mode=ParseMode.HTML)
-            await notify_admins(bot, f"🎁 <b>Trial shuru</b>: {who(uid)}", uid)
+            await notify_admins(bot, "\n".join(
+                ["🎁 <b>Free Trial shuru hua</b>", ""] + user_card(uid)
+                + ["", f"💎 Plan: <b>{pro['emoji']} {pro['name']} (Trial)</b>",
+                   f"📅 Shuru: {now_ist()}",
+                   f"⌛ Khatam: <b>{fmt_date(exp)} IST</b> ({TRIAL_DAYS} din)",
+                   f"📋 {pro['tasks']} task • 📤 {pro['daily']} post/din har task",
+                   "", users_line()]), uid)
             # Pehli baar hi Task 1 banta hai — user ne baad mein delete kiya to wapas nahi
             if not list_tasks(uid):
                 tid = create_task(uid, new_task_config("Task 1"))
@@ -263,6 +269,13 @@ async def after_gate(bot, uid: int):
 # =============================================================================
 # WRAPPERS
 # =============================================================================
+async def _notify_new_user(bot, uid: int, tg_user=None):
+    """Admin ko naye user ki poori jaankari."""
+    text = "\n".join(["🆕 <b>Naya user aaya</b>", ""] + user_card(uid, tg_user)
+                     + ["", users_line(), f"🕐 {now_ist()}"])
+    await notify_admins(bot, text, uid)
+
+
 def _touch(update: Update):
     """(uid, naya_user?)"""
     u = update.effective_user
@@ -335,7 +348,7 @@ async def _user_command(fn, update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     msg = update.message
     if is_new:
-        await notify_admins(context.bot, f"🆕 <b>Naya user</b>: {who(uid)}", uid)
+        await _notify_new_user(context.bot, uid, update.effective_user)
     if is_blocked(uid):
         lang = get_lang(uid)
         await msg.reply_text("⛔ " + tr(lang, "Your access has been blocked.",
@@ -485,7 +498,7 @@ async def handle_private(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     uid, is_new = _touch(update)
     if is_new:
-        await notify_admins(context.bot, f"🆕 <b>Naya user</b>: {who(uid)}", uid)
+        await _notify_new_user(context.bot, uid, update.effective_user)
     lang = get_lang(uid)
     if is_blocked(uid):
         await msg.reply_text("⛔ " + tr(lang, "Your access has been blocked.", "Aapka access band kar diya gaya hai."))
@@ -650,7 +663,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def _route_callback(query, context, uid: int, data: str):
     if not get_user(uid):
         if upsert_user(uid, query.from_user.username or "", query.from_user.first_name or ""):
-            await notify_admins(context.bot, f"🆕 <b>Naya user</b>: {who(uid)}", uid)
+            await _notify_new_user(context.bot, uid, query.from_user)
     if is_blocked(uid):
         await query.answer("⛔", show_alert=True)
         return

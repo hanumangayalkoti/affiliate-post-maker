@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from telegram.constants import ParseMode
 
 from storage import to_local, patch_task_cfg
-from users import ADMIN_IDS, get_user, is_admin
+from users import ADMIN_IDS, get_user, is_admin, user_counts
 
 logger = logging.getLogger(__name__)
 esc = html_lib.escape
@@ -20,6 +20,45 @@ def who(uid: int, u: dict = None) -> str:
     name = esc(u.get("first_name") or "")
     un = f" @{esc(u['username'])}" if u.get("username") else ""
     return f"{name}{un} <code>{uid}</code>".strip()
+
+
+def _ist(dt) -> str:
+    if not dt:
+        return "—"
+    try:
+        return to_local(dt).strftime("%d %b %Y, %I:%M %p IST")
+    except Exception:
+        return "—"
+
+
+def user_card(uid: int, tg_user=None) -> list:
+    """Admin ke liye user ki poori pehchaan — naam, username, ID, join time, referral."""
+    u = get_user(uid) or {}
+    name = esc(u.get("first_name") or getattr(tg_user, "first_name", "") or "—")
+    uname = u.get("username") or getattr(tg_user, "username", "") or ""
+    lines = [f"👤 Naam: <b>{name}</b>",
+             f"🔗 Username: {'@' + esc(uname) if uname else '— (nahi hai)'}",
+             f"🆔 User ID: <code>{uid}</code>"]
+    tg_lang = getattr(tg_user, "language_code", "") or ""
+    if tg_lang:
+        lines.append(f"🌐 Telegram language: {esc(tg_lang)}")
+    lines.append(f"📅 Join: {_ist(u.get('joined_at'))}")
+    try:
+        from referral import referrer_of
+        ref = referrer_of(uid)
+    except Exception:
+        ref = None
+    lines.append(f"🎁 Referred by: {who(ref) if ref else '— (seedha aaya)'}")
+    return lines
+
+
+def users_line() -> str:
+    c = user_counts()
+    return f"👥 Kul users: <b>{c.get('total', 0)}</b> • Aaj naye: <b>{c.get('new_today', 0)}</b>"
+
+
+def now_ist() -> str:
+    return _ist(datetime.now(timezone.utc))
 
 
 async def notify_admins(bot, text: str, about_uid: int = None):
