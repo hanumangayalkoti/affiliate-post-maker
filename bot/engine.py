@@ -455,7 +455,9 @@ def _build_utf16_map(text: str) -> list:
 _LOOKS_LIKE_URL = re.compile(r"^\s*(?:https?://|www\.)\S+\s*$", re.I)
 
 
-def entities_to_html(text: str, entities: list) -> str:
+def entities_to_html(text: str, entities: list, bold_links: bool = True) -> str:
+    """Telegram entities → HTML. bold_links=False: links (url / text_link) bold NAHI
+    honge — task ka 'Bold Link' toggle OFF."""
     if not entities:
         return html_lib.escape(text)
 
@@ -481,16 +483,19 @@ def entities_to_html(text: str, entities: list) -> str:
         if e > len(text) or s >= len(text) or e <= s:
             continue
         etype = str(getattr(ent.type, "value", ent.type))
+        b_open, b_close = ("<b>", "</b>") if bold_links else ("", "")
+        if etype == "url" and not bold_links:
+            continue                         # sada link, Telegram khud link banata hai
         if etype == "text_link" and _LOOKS_LIKE_URL.match(text[s:e]):
-            # Dikhne wala text khud ek link hai — bold rakho par <a href> nahi; Telegram
-            # khud link banayega aur tap pe seedha kholega ("Open Link?" nahi aayega)
-            open_tags[s]    = "<b>" + open_tags[s]
-            close_tags[e-1] = close_tags[e-1] + "</b>"
+            # Dikhne wala text khud ek link hai — <a href> nahi; Telegram khud link
+            # banayega aur tap pe seedha kholega ("Open Link?" nahi aayega)
+            open_tags[s]    = b_open + open_tags[s]
+            close_tags[e-1] = close_tags[e-1] + b_close
             continue
         if etype == "text_link":
             url = html_lib.escape(ent.url or "")
-            open_tags[s]    = f'<a href="{url}"><b>' + open_tags[s]
-            close_tags[e-1] = close_tags[e-1] + '</b></a>'
+            open_tags[s]    = f'<a href="{url}">{b_open}' + open_tags[s]
+            close_tags[e-1] = close_tags[e-1] + f'{b_close}</a>'
         elif etype in pairs:
             o, c = pairs[etype]
             open_tags[s]    = o + open_tags[s]
@@ -763,7 +768,7 @@ async def post_amazon_original(context, uid: int, task: dict, msg, raw_plain: st
     cp, ce = remove_footer(raw_plain, raw_entities)
     cp, ce = await replace_amazon_links(cp, ce, amazon_urls, tag)
     cp, ce = _strip_if_on(cp, ce, cfg)
-    body = entities_to_html(cp, ce) if cp.strip() else ""
+    body = entities_to_html(cp, ce, cfg.get("bold_links", True)) if cp.strip() else ""
 
     best = live[0] if live else None
     img_bytes, used_card, src = None, False, ""
@@ -837,7 +842,7 @@ async def post_other(context, uid: int, task: dict, payload: dict, lang: str = "
         if not ok:
             return "duplicate", tr(lang, f"non-Amazon post — {when} ago", f"non-Amazon post — {when} pehle")
 
-    body_html = entities_to_html(text, entities) if text else ""
+    body_html = entities_to_html(text, entities, cfg.get("bold_links", True)) if text else ""
 
     try:
         if file_id:
@@ -1195,7 +1200,7 @@ async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str
                 cp, ce = remove_footer(raw_plain, raw_entities)
                 cp, ce = _strip_if_on(cp, ce, cfg)
                 cp, ce = await replace_amazon_links(cp, ce, amazon_urls, tag)
-                body   = entities_to_html(cp, ce)
+                body   = entities_to_html(cp, ce, cfg.get("bold_links", True))
                 try:
                     await deliver(context.bot.send_message,
                                   dict(chat_id=channel, text=wrap_plain_post(body, cfg, has_image=False),

@@ -395,6 +395,7 @@ def task_text(uid: int, task: dict, lang: str) -> str:
         f"🔍 {tr(lang, 'Posts', 'Posts')}: {' + '.join(posts)}",
         f"♻️ {tr(lang, 'Duplicate check', 'Duplicate check')}: {_onoff(c.get('dup_check', True))}",
         f"🚫 @User &amp; TG Link: {_onoff(c.get('strip_promo', True))}",
+        f"🅱️ Bold Link: {_onoff(c.get('bold_links', True))}",
         f"📉 Discount Filter: {disc_label(c, lang)}",
         f"🎨 Image Card: {card_line}",
         f"💧 Watermark: {_onoff(wm.get('enabled') and wm.get('text'))}",
@@ -441,7 +442,8 @@ def task_kb(uid: int, task: dict, lang: str) -> InlineKeyboardMarkup:
     rows.append([btn(f"🔗 Search Links {_onoff(c.get('search_links'))}", callback_data=f"t:{tid}:search"),
                  pause_btn])
     # Lamba naam — poori line, taaki text pura dikhe
-    rows.append([btn(f"{_onoff(c.get('strip_promo', True))} 🚫 @User & TG Link", callback_data=f"t:{tid}:promo")])
+    rows.append([btn(f"{_onoff(c.get('strip_promo', True))} 🚫 @User & TG Link", callback_data=f"t:{tid}:promo"),
+                 btn(f"🅱️ Bold Link {_onoff(c.get('bold_links', True))}", callback_data=f"t:{tid}:bold")])
     if not (d and d["id"] == tid):
         rows.append([btn(tr(lang, "⭐ Make Default", "⭐ Default banayein"), callback_data=f"t:{tid}:def")])
     rows.append([btn(tr(lang, "✏️ Rename", "✏️ Naam badlein"), callback_data=f"t:{tid}:ren"),
@@ -605,6 +607,23 @@ def search_text(task, lang):
               f"Status: <b>{'✅ ON' if on else '❌ OFF'}</b>\n\n"
               "Amazon search / deals / offer page wale link (ek product nahi, list).\n"
               "<b>ON</b> → ye bhi aapke tag ke saath post honge.\n<b>OFF</b> → skip honge." + note)
+
+
+def bold_text(task, lang):
+    on = task["cfg"].get("bold_links", True)
+    return tr(lang,
+              f"🅱️ <b>Bold Link</b> — {esc(tname(task, lang))}\n\n"
+              f"Status: <b>{'✅ ON' if on else '❌ OFF'}</b>\n\n"
+              "<b>ON</b> → links in the post are <b>bold</b> (stand out more).\n"
+              "<b>OFF</b> → links are normal (not bold).\n\n"
+              "<i>Works on every post — Amazon card link, original caption (MINIMAL) and Non-Amazon posts. "
+              "Links still open directly either way.</i>",
+              f"🅱️ <b>Bold Link</b> — {esc(tname(task, lang))}\n\n"
+              f"Status: <b>{'✅ ON' if on else '❌ OFF'}</b>\n\n"
+              "<b>ON</b> → post ke links <b>bold</b> dikhenge (zyada nazar aate hain).\n"
+              "<b>OFF</b> → links normal dikhenge (bold nahi).\n\n"
+              "<i>Har post pe lagta hai — Amazon card ka link, original caption (MINIMAL) aur Non-Amazon posts. "
+              "Dono mein link seedha khulta hai.</i>")
 
 
 def promo_text(task, lang):
@@ -1027,7 +1046,7 @@ async def handle_task_callback(query, context, uid: int, data: str) -> bool:
 
     for a, key, txt in (("dup", "dup_check", dup_text), ("silent", "silent", silent_text),
                         ("search", "search_links", search_text), ("promo", "strip_promo", promo_text),
-                        ("badge", "amazon_badge", badge_text)):
+                        ("badge", "amazon_badge", badge_text), ("bold", "bold_links", bold_text)):
         if act == a:
             default = a != "search"
             if arg == "t":
@@ -1441,6 +1460,7 @@ def config_text(uid: int, task: dict, lang: str) -> str:
              f"📝 Non-Amazon posts: {on(c.get('allow_other', True))}",
              f"♻️ Duplicate: {on(c.get('dup_check', True))}",
              f"🚫 @User &amp; TG Link: {on(c.get('strip_promo', True))}",
+             f"🅱️ Bold Link: {on(c.get('bold_links', True))}",
              f"🔗 Search Links: {on(c.get('search_links'))}",
              f"📉 Discount Filter: {disc_label(c, lang)}",
              f"🔔 Notification: {'🔕 Silent' if c.get('silent', True) else '🔔 Loud'}\n"]
