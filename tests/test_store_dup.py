@@ -153,5 +153,39 @@ class PostOtherDuplicateTest(unittest.TestCase):
         self.assertEqual(claimed, [("p:myntra:31076617",)])
 
 
+class MultiProductTest(unittest.TestCase):
+    def run_post(self, taken):
+        async def fake(urls, limit=5):
+            return ["myntra:1", "myntra:2", "myntra:3"]
+        claimed = []
+
+        def claim(uid, tid, *keys):
+            if keys and keys[0] in taken:
+                return False, "3h"
+            claimed.append(keys)
+            return True, None
+        o = (engine.find_product_keys, engine.claim_posted, engine.post_amazon_product)
+        engine.find_product_keys, engine.claim_posted = fake, claim
+        try:
+            task = {"id": 1, "cfg": {"channel": "-100", "dup_check": True}}
+            # context=None → asli send fail hoga; hume sirf duplicate faisla dekhna hai
+            st, detail = asyncio.run(REAL_POST_OTHER(None, 7, task,
+                                                     {"text": "Three deals in one post today https://a https://b https://c",
+                                                      "entities": []}, "hi"))
+        finally:
+            engine.find_product_keys, engine.claim_posted, _ = o
+        return st, detail, claimed
+
+    def test_all_old_is_duplicate(self):
+        st, detail, _ = self.run_post({"p:myntra:1", "p:myntra:2", "p:myntra:3"})
+        self.assertEqual(st, "duplicate")
+        self.assertIn("same product", detail)
+
+    def test_one_new_still_posts(self):
+        st, _, claimed = self.run_post({"p:myntra:1", "p:myntra:2"})
+        self.assertNotEqual(st, "duplicate")
+        self.assertIn(("p:myntra:3",), claimed)
+
+
 if __name__ == "__main__":
     unittest.main()
