@@ -42,6 +42,7 @@ SELF_MARKER = "\u2063"        # invisible — bot apne message pehchanne ke liye
 
 # ── TIMEZONE ─────────────────────────────────────────────────────────────
 from storage import LOCAL_TZ, to_local, local_day_start_utc, list_tasks, get_task  # noqa: E402
+from store_ids import find_product_keys  # noqa: E402
 
 
 def now_local() -> datetime:
@@ -813,12 +814,45 @@ async def post_amazon_original(context, uid: int, task: dict, msg, raw_plain: st
 
 
 def _other_dup_key(payload: dict) -> str:
-    """Non-Amazon duplicate — caption ke text se; text na ho to photo/video ki ID se."""
+    """Purana tareeka — caption (link ke saath) se; text na ho to photo/video ki ID se."""
     k = normalise_caption(payload.get("text") or "")
     if k:
         return "c:" + k
     uid_ = payload.get("unique_id") or ""
     return ("f:" + uid_) if uid_ else ""
+
+
+MIN_CAPTION_WORDS = 4      # isse chhota caption ("Loot deal 🔥") akela duplicate nahi maana jaata
+
+
+def _caption_without_links(text: str) -> str:
+    return URL_REGEX.sub(" ", text or "")
+
+
+async def _other_dup_keys(payload: dict):
+    """
+    Non-Amazon duplicate keys — priority se:
+      1) link kholke product number (Myntra / Flipkart / Shopsy) — EarnKaro har baar
+         naya link deta hai, par product number wahi rehta hai
+      2) link na khule → caption BINA link ke (sirf lamba caption, 4+ shabd)
+      3) warna purana tareeka (caption + link / photo ID)
+    Returns (keys_to_check, extra_keys_to_remember, reason)
+    """
+    text = payload.get("text") or ""
+    urls = extract_urls(text) + hidden_link_urls(ents_from_json(payload.get("entities")))
+    old = _other_dup_key(payload)
+    if any(is_amazon_url(u) for u in urls):
+        return [old], [], ""                       # Amazon search/deal page — pehle jaisa
+    cap = normalise_caption(_caption_without_links(text))
+    cap_key = ("n:" + cap) if len(cap.split()) >= MIN_CAPTION_WORDS else ""
+    products = await find_product_keys(urls) if urls else []
+    if products:
+        # Product mila → sirf product se faisla. Caption bhi yaad rakho, taaki
+        # baad mein link na khule tab bhi same caption pakda jaaye.
+        return ["p:" + k for k in products], [cap_key], "product"
+    if cap_key:
+        return [cap_key], [], "caption"
+    return [old], [], ""
 
 
 async def post_other(context, uid: int, task: dict, payload: dict, lang: str = "hi"):
@@ -836,11 +870,17 @@ async def post_other(context, uid: int, task: dict, payload: dict, lang: str = "
     media_fid  = payload.get("media_file_id") or ""
     media_kind = payload.get("media_kind") or ""
 
-    dup_key = _other_dup_key(payload) if cfg.get("dup_check", True) else ""
-    if dup_key:
-        ok, when = claim_posted(uid, tid, dup_key)
-        if not ok:
-            return "duplicate", tr(lang, f"non-Amazon post — {when} ago", f"non-Amazon post — {when} pehle")
+    dup_keys, extra_keys, why = (await _other_dup_keys(payload)) if cfg.get("dup_check", True) \
+        else ([], [], "")
+    ok, when = claim_posted(uid, tid, *dup_keys)
+    if not ok:
+        reason = {"product": tr(lang, "same product", "same product"),
+                  "caption": tr(lang, "same caption", "same caption")}.get(why, "")
+        reason = f" — {reason}" if reason else ""
+        return "duplicate", tr(lang, f"non-Amazon post{reason} — {when} ago",
+                               f"non-Amazon post{reason} — {when} pehle")
+    for k in extra_keys:
+        claim_posted(uid, tid, k)                 # sirf yaad rakhna — faisla upar ho chuka
 
     body_html = entities_to_html(text, entities, cfg.get("bold_links", True)) if text else ""
 
@@ -878,7 +918,7 @@ async def post_other(context, uid: int, task: dict, payload: dict, lang: str = "
 
         else:
             if not body_html.strip():
-                release_posted(uid, tid, dup_key)
+                release_posted(uid, tid, *dup_keys, *extra_keys)
                 return "error", tr(lang, "empty post", "khali post")
             await deliver(context.bot.send_message,
                           dict(chat_id=channel, text=wrap_plain_post(body_html, cfg, has_image=False),
@@ -888,7 +928,7 @@ async def post_other(context, uid: int, task: dict, payload: dict, lang: str = "
         log_post(uid, tid, "other", "", (text or "")[:80])
         return "posted", "non-Amazon post"
     except Exception as e:
-        release_posted(uid, tid, dup_key)
+        release_posted(uid, tid, *dup_keys, *extra_keys)
         logger.error(f"post_other fail ({uid}/{tid}): {e}")
         return "error", _friendly_error(e, lang)
 
