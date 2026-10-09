@@ -107,6 +107,8 @@ DEFAULT_TASK = {
     "footer":           {"enabled": False, "text": ""},
     "watermark":        {"enabled": False, "text": "", "position": "bottom_right",
                          "size": "s", "color": "white"},
+    "wm_amazon":        True,    # watermark Amazon posts ki photo pe
+    "wm_other":         True,    # watermark Non-Amazon posts ki photo pe
     "card":             DEFAULT_CARD,
     "buttons": {
         "btn1": {"label": "Join Channel", "url": "", "enabled": False, "style": ""},
