@@ -38,6 +38,7 @@ import billing
 import faq
 import gate
 import task_ui
+import broadcasts
 import referral
 from alerts import notify_admins, who, user_card, users_line, now_ist
 from database import (
@@ -828,6 +829,7 @@ async def cleanup_job(context: ContextTypes.DEFAULT_TYPE):
     n = cache_cleanup(CACHE_KEEP_DAYS)
     post_log_cleanup(120)
     cleanup_old_entries()
+    broadcasts.prune()
     logger.info(f"Cleanup: {n} purane cache products hataye")
 
 
@@ -853,6 +855,7 @@ def main():
 
     init_db()
     referral.init_tables()
+    broadcasts.init_tables()
     if not get_user(OWNER_ID):          # sirf pehli baar — warna har restart pe naam mit jaata
         upsert_user(OWNER_ID, "", "Admin")
 

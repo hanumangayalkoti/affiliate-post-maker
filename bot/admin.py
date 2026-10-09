@@ -8,13 +8,11 @@ Callback:  adm:home | adm:u:<seg>:<page> | adm:v:<uid>:<seg>:<page>
            adm:e / adm:b / adm:m / adm:k / adm:tk / adm:ga / adm:rd :<uid>:<seg>:<page>
            adm:p | adm:bc | adm:bcgo:<seg> | adm:s
 """
-import asyncio
 import logging
 import html as html_lib
 
 from telegram import InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
-from telegram.error import Forbidden, RetryAfter
 from telegram.ext import ContextTypes
 
 from amazon_api import get_product_by_asin, api_stats
@@ -23,6 +21,9 @@ from engine import fmt_date, day_start_naive, dm_user
 from storage import list_tasks
 from tiers import TIERS, TIER_ORDER, tier_label
 from ui import btn, chan, track, GREEN, RED, BLUE
+import broadcasts
+import gate
+from tiers import TRIAL_DAYS
 from users import (
     find_user, get_user, add_days, end_plan, set_blocked, set_tier, is_active, days_left,
     user_counts, list_users_page, list_user_ids, revenue_summary, recent_payments,
@@ -35,7 +36,6 @@ esc = html_lib.escape
 PAGE = 10
 SEGMENTS = [("all", "👥 Sab"), ("active", "✅ Paid"), ("trial", "🎁 Trial"),
             ("expired", "⌛ Khatam"), ("blocked", "⛔ Block")]
-_broadcast_running = {"on": False}
 
 
 def _who(u: dict) -> str:
@@ -47,16 +47,18 @@ def _who(u: dict) -> str:
 
 
 def _plan_short(u: dict) -> str:
+    """List ke liye: '🥈 Pro (🎁 Trial) · 3 din' / '⌛ Khatam' / '⛔ Block'."""
     uid = u["user_id"]
     if is_admin(uid):
-        return "👑"
+        return "👑 Admin"
     if u.get("blocked"):
-        return "⛔"
+        return "⛔ Block"
     if is_active(uid, u):
         t = TIERS.get(u.get("tier") or "", {})
-        tag = "🎁" if u.get("is_trial") else t.get("emoji", "✅")
-        return f"{tag} {days_left(u):.0f}d"
-    return "⌛"
+        name = f"{t.get('emoji', '✅')} {t.get('name', 'Plan')}"
+        trial = " (🎁 Trial)" if u.get("is_trial") else ""
+        return f"{name}{trial} · {days_left(u):.0f} din"
+    return "⌛ Khatam" if u.get("expires_at") else "🆓 Free"
 
 
 # =============================================================================
@@ -91,7 +93,8 @@ def home_kb() -> InlineKeyboardMarkup:
          btn("💰 Payments", callback_data="adm:p")],
         [btn("🔍 User dhoondo", callback_data="adm:s"),
          btn("📣 Broadcast", callback_data="adm:bc")],
-        [btn(f"💸 Payout requests ({_pending_payouts()})", callback_data="adm:wd")],
+        [btn("↩️ Broadcast Recall", callback_data="adm:bcl"),
+         btn(f"💸 Payouts ({_pending_payouts()})", callback_data="adm:wd")],
         [btn("🧪 Amazon API test", callback_data="adm:api"),
          btn("🔄 Refresh", callback_data="adm:home")],
         [btn("🏠 Home", callback_data="home")],
@@ -125,6 +128,7 @@ def users_page(seg: str, page: int):
         nav.append(btn("Agla ➡️", callback_data=f"adm:u:{seg}:{page + 1}"))
     if nav:
         rows.append(nav)
+    rows.append([btn("🔍 ID / @username se dhoondo", callback_data="adm:s")])
     rows.append([btn("⬅️ Panel", callback_data="adm:home")])
     return "\n".join(lines), InlineKeyboardMarkup(rows)
 
@@ -132,46 +136,78 @@ def users_page(seg: str, page: int):
 # =============================================================================
 # USER CARD
 # =============================================================================
-def user_card(uid: int, seg: str = "all", page: int = 0):
+async def user_card(bot, uid: int, seg: str = "all", page: int = 0):
     u = get_user(uid)
     if not u:
         return "❌ User nahi mila.", InlineKeyboardMarkup([[btn("⬅️ Panel", callback_data="adm:home")]])
     st = user_stats(uid, day_start_naive())
     lim = limits(uid, u)
+    active = is_active(uid, u)
     if is_admin(uid):
         plan = "👑 Admin"
-    elif u.get("blocked"):
-        plan = "⛔ BLOCKED"
-    elif is_active(uid, u):
-        plan = f"{lim['emoji']} {lim['name']}{' (trial)' if u.get('is_trial') else ''} — {days_left(u):.1f} din baaki"
+    elif active:
+        plan = f"{lim['emoji']} {lim['name']}{' (🎁 Trial)' if u.get('is_trial') else ''}"
     elif u.get("expires_at"):
-        plan = "⌛ Khatam"
+        plan = f"⌛ Khatam ({TIERS.get(u.get('tier') or '', {}).get('name', '—')})"
     else:
-        plan = "🆕 Kabhi nahi liya"
-    tasks = list_tasks(uid)
+        plan = "🆓 Kabhi plan nahi liya"
+    if u.get("blocked"):
+        status = "⛔ Admin ne block kiya"
+    elif u.get("bot_blocked"):
+        status = "🚫 User ne bot block kiya"
+    elif active or is_admin(uid):
+        status = "✅ Active"
+    else:
+        status = "⌛ Plan khatam — posts band"
+    if not gate.join_enabled():
+        member = "— (join zaroori nahi)"
+    else:
+        try:
+            member = "✅ Joined" if await gate.is_joined(bot, uid, fresh=True) else "❌ Join nahi kiya"
+        except Exception:
+            member = "❓ Check nahi hua"
+    pays_all = recent_payments(1, uid)
+    if u.get("is_trial") and active:
+        started = f"{fmt_date(u.get('joined_at'))} (trial)"
+    elif pays_all:
+        started = f"{fmt_date(pays_all[0][5])} (last payment)"
+    else:
+        started = "—"
+    left = f"{days_left(u):.1f} din" if active else "0"
+    uname = f"@{esc(u['username'])}" if u.get("username") else "— (nahi hai)"
     lines = [
-        f"👤 <b>{_who(u)}</b>\n🆔 <code>{uid}</code>   🌐 {'English' if u.get('lang') == 'en' else 'Hinglish'}\n",
+        f"👤 <b>{esc(u.get('first_name') or '—')}</b>",
+        f"🔗 Username: {uname}",
+        f"🆔 ID: <code>{uid}</code>   🌐 {'English' if u.get('lang') == 'en' else 'Hinglish'}\n",
+        f"📊 Status: <b>{status}</b>",
+        f"📢 Channel membership: {member}\n",
         f"💳 Plan: <b>{plan}</b>",
+        f"🟢 Shuru: {started}",
+        f"⏳ Din baaki: <b>{left}</b>",
         f"📅 Expiry: {fmt_date(u.get('expires_at'))}",
-        f"🎁 Trial liya: {'haan' if u.get('trial_used') else 'nahi'}",
-        f"🗓️ Joined: {fmt_date(u.get('joined_at'))}   👀 Last seen: {fmt_date(u.get('last_seen'))}",
+        f"🎁 Trial liya: {'haan' if u.get('trial_used') else 'nahi'} ({TRIAL_DAYS} din wala)",
+        f"🗓️ Joined: {fmt_date(u.get('joined_at'))}",
+        f"👀 Last seen: {fmt_date(u.get('last_seen'))}",
     ]
-    if u.get("bot_blocked"):
-        lines.append("🚫 Bot ko block kiya hua hai")
     import referral
     ref_line = referral.admin_referral_line(uid)
     if ref_line:
         lines.append(ref_line)
     daily = "∞" if lim.get("key") == "admin" else lim["daily"]
     lines.append(f"\n📤 Posts: aaj {st['today']} (limit {daily}/task) | 7 din {st['week']} | total {st['total']}")
-    lines.append(f"\n📋 <b>Tasks ({len(tasks)})</b>")
+    tasks = list_tasks(uid)
+    lines.append(f"\n📋 <b>Tasks ({len(tasks)}/{lim.get('tasks', 0)})</b>")
+    if not tasks:
+        lines.append("<i>Abhi koi task nahi bana.</i>")
     for t in tasks[:6]:
         c = t["cfg"]
-        lines.append(f"{'⏸️' if t['paused'] else '▶️'} <b>{esc(c.get('name') or '#' + str(t['id']))}</b> — "
-                     f"<code>{esc(c.get('tag') or '—')}</code>\n"
-                     f"     📥 {chan(c.get('source_title'), c.get('source_username'))} ➜ "
-                     f"📢 {chan(c.get('channel_title'), c.get('channel_username'))}  "
-                     f"(aaj {st['by_task'].get(t['id'], 0)})")
+        lines.append(f"{'⏸️' if t['paused'] else '▶️'} <b>{esc(c.get('name') or '#' + str(t['id']))}</b>"
+                     f"  (aaj {st['by_task'].get(t['id'], 0)} post)\n"
+                     f"     🏷️ Amazon tag: <code>{esc(c.get('tag') or '—')}</code>\n"
+                     f"     📥 Draft: {chan(c.get('source_title'), c.get('source_username'), '—')}\n"
+                     f"     📢 Destination: {chan(c.get('channel_title'), c.get('channel_username'), '—')}")
+    if len(tasks) > 6:
+        lines.append(f"… aur {len(tasks) - 6} task — 📋 Tasks dekho")
     pays = recent_payments(3, uid)
     if pays:
         lines.append("\n💰 <b>Payments</b>")
@@ -259,12 +295,14 @@ async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE, uid: int
 async def cmd_user(update: Update, context: ContextTypes.DEFAULT_TYPE, uid: int):
     args = context.args or []
     if not args:
-        context.user_data["action"] = "adm_find"
-        m = await update.message.reply_text("🔍 User ka Telegram ID ya @username bhejein:")
+        # Forwarder jaisa — seedha numbered list; ID se dhoondhne ka button list mein hai
+        text, kb = users_page("all", 0)
+        m = await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb,
+                                            disable_web_page_preview=True)
         track(context, m)
         return
     u = find_user(args[0])
-    text, kb = user_card(u["user_id"]) if u else ("❌ User nahi mila.", None)
+    text, kb = (await user_card(context.bot, u["user_id"])) if u else ("❌ User nahi mila.", None)
     m = await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb,
                                         disable_web_page_preview=True)
     track(context, m)
@@ -293,35 +331,93 @@ async def _change_days(bot, target: int, days: float):
 # =============================================================================
 # BROADCAST
 # =============================================================================
-async def _run_broadcast(app, admin_uid: int, from_chat: int, msg_id: int, segment: str):
-    ids = list_user_ids(segment)
-    ok = fail = blocked = 0
-    _broadcast_running["on"] = True
-    try:
-        for i, target in enumerate(ids):
-            try:
-                await app.bot.copy_message(chat_id=target, from_chat_id=from_chat, message_id=msg_id)
-                ok += 1
-            except RetryAfter as e:
-                await asyncio.sleep(float(getattr(e, "retry_after", 5)) + 1)
-                try:
-                    await app.bot.copy_message(chat_id=target, from_chat_id=from_chat, message_id=msg_id)
-                    ok += 1
-                except Exception:
-                    fail += 1
-            except Forbidden:
-                blocked += 1
-                mark_bot_blocked(target)
-            except Exception:
-                fail += 1
-            await asyncio.sleep(0.05)
-            if i and i % 200 == 0:
-                await dm_user(app.bot, admin_uid, f"📣 Broadcast chal raha hai... {i}/{len(ids)}")
-    finally:
-        _broadcast_running["on"] = False
-    await dm_user(app.bot, admin_uid,
-                  f"📣 <b>Broadcast poora</b>\n\n✅ Pahuncha: {ok}\n🚫 Bot block: {blocked}\n❌ Fail: {fail}",
-                  parse_mode=ParseMode.HTML)
+BC_AUDIENCES = [
+    ("all", "👥 Sabko"), ("paid_or_trial", "✅ Plan/Trial chalu"), ("active", "💎 Sirf Paid"),
+    ("trial", "🎁 Sirf Trial"), ("expired", "⌛ Plan khatam"), ("en", "🇬🇧 English"), ("hi", "🇮🇳 Hinglish"),
+]
+BC_NAMES = dict(BC_AUDIENCES, sel="👥 Chune hue users")
+
+
+def _recall_kb(bc_id):
+    return InlineKeyboardMarkup([[btn("↩️ Recall (wapas lo)", RED, callback_data=f"adm:bre:{bc_id}")],
+                                 [btn("👑 Panel", callback_data="adm:home")]])
+
+
+def bc_audience_kb() -> InlineKeyboardMarkup:
+    rows, pair = [], []
+    for seg, name in BC_AUDIENCES:
+        pair.append(btn(f"{name} ({len(list_user_ids(seg))})", callback_data=f"adm:bcgo:{seg}"))
+        if len(pair) == 2:
+            rows.append(pair)
+            pair = []
+    if pair:
+        rows.append(pair)
+    rows.append([btn("👥 Users chunein", BLUE, callback_data="adm:bsel:0")])
+    rows.append([btn("❌ Cancel", callback_data="adm:home")])
+    return InlineKeyboardMarkup(rows)
+
+
+def bc_select_page(context, page: int):
+    """Broadcast ke liye users chunna — number dabao to ✔️ / hatao."""
+    sel = set(context.user_data.get("bc_sel") or [])
+    users, total = list_users_page("all", page * PAGE, PAGE)
+    pages = max(1, (total + PAGE - 1) // PAGE)
+    lines = [f"👥 <b>Broadcast — users chunein</b>   page {page + 1}/{pages}\n"]
+    for i, u in enumerate(users, 1):
+        mark = "✅ " if u["user_id"] in sel else ""
+        lines.append(f"<b>{i}.</b> {mark}{_who(u)} — {_plan_short(u)}")
+    lines.append(f"\n✔️ Chune hue: <b>{len(sel)}</b> (page badalne pe bhi yaad rehte hain)")
+    nums = [btn(("✅" if u["user_id"] in sel else "") + str(i),
+                callback_data=f"adm:bst:{u['user_id']}:{page}") for i, u in enumerate(users, 1)]
+    rows = [nums[i:i + 5] for i in range(0, len(nums), 5)]
+    nav = []
+    if page > 0:
+        nav.append(btn("⬅️ Pichla", callback_data=f"adm:bsel:{page - 1}"))
+    if page + 1 < pages:
+        nav.append(btn("Agla ➡️", callback_data=f"adm:bsel:{page + 1}"))
+    if nav:
+        rows.append(nav)
+    rows.append([btn(f"✅ Bhejo ({len(sel)})", GREEN, callback_data="adm:bsd"),
+                 btn("🗑️ Saaf karo", callback_data=f"adm:bsc:{page}")])
+    rows.append([btn("⬅️ Wapas", callback_data="adm:bcback")])
+    return "\n".join(lines), InlineKeyboardMarkup(rows)
+
+
+def bc_list_screen():
+    rows_ = broadcasts.recent(10)
+    if not rows_:
+        return ("↩️ <b>Recall</b>\n\nPichhle 48 ghante mein koi broadcast nahi (ya sab recall ho chuke).",
+                InlineKeyboardMarkup([[btn("⬅️ Panel", callback_data="adm:home")]]))
+    lines = ["↩️ <b>Pichhle 48 ghante ke broadcast</b>\n"]
+    kb = []
+    for bc_id, aud, total, sent, created in rows_:
+        lines.append(f"#{bc_id} — {BC_NAMES.get(aud, aud)} — ✅ {sent}/{total} — {fmt_date(created)}")
+        kb.append([btn(f"↩️ #{bc_id} wapas lo", callback_data=f"adm:bre:{bc_id}")])
+    kb.append([btn("⬅️ Panel", callback_data="adm:home")])
+    return "\n".join(lines), InlineKeyboardMarkup(kb)
+
+
+async def _start_broadcast(query, context, uid: int, audience: str, ids: list):
+    from task_ui import show
+    src = context.user_data.pop("bc_src", None)
+    if not src:
+        await show(query, context, "⚠️ Message nahi mila, /broadcast dobara karein.",
+                   InlineKeyboardMarkup([[btn("⬅️ Panel", callback_data="adm:home")]]))
+        return
+    if broadcasts.is_running():
+        context.user_data["bc_src"] = src
+        await show(query, context, "⚠️ Ek broadcast pehle se chal raha hai. Thodi der baad try karein.",
+                   InlineKeyboardMarkup([[btn("⬅️ Panel", callback_data="adm:home")]]))
+        return
+    if not ids:
+        context.user_data["bc_src"] = src
+        await show(query, context, "⚠️ Is group mein koi user nahi.", bc_audience_kb())
+        return
+    context.user_data.pop("bc_sel", None)
+    await show(query, context, f"📣 <b>Broadcast shuru</b> — {BC_NAMES.get(audience, audience)}\n👥 {len(ids)} users")
+    context.application.create_task(broadcasts.run(
+        context.bot, uid, src[0], src[1], ids, audience, status_msg=query.message,
+        mark_bot_blocked=mark_bot_blocked, recall_kb=_recall_kb))
 
 
 # =============================================================================
@@ -359,21 +455,90 @@ async def handle_admin_callback(query, context, uid: int, data: str) -> bool:
         return True
     if act == "bc":
         context.user_data["action"] = "adm_bc"
-        await show(query, context, "📣 Jo message sabko bhejna hai wo bhejein (text / photo / video).",
+        await show(query, context, "📣 <b>Broadcast</b>\n\nJo message bhejna hai wo bhejein (text / photo / video — "
+                                   "kuch bhi). Phir main poochunga kisko bhejna hai.",
                    InlineKeyboardMarkup([[btn("⬅️ Panel", callback_data="adm:home")]]))
+        return True
+    if act == "bcback":
+        if not context.user_data.get("bc_src"):
+            await show(query, context, "⚠️ Message nahi mila, /broadcast dobara karein.",
+                       InlineKeyboardMarkup([[btn("⬅️ Panel", callback_data="adm:home")]]))
+            return True
+        await show(query, context, "📣 <b>Ye message kisko bhejna hai?</b>", bc_audience_kb())
         return True
     if act == "bcgo":
         seg = p[2] if len(p) > 2 else "all"
-        src = context.user_data.pop("bc_src", None)
-        if not src:
-            await show(query, context, "⚠️ Message nahi mila, /broadcast dobara karein.")
+        if seg not in dict(BC_AUDIENCES):
             return True
-        if _broadcast_running["on"]:
-            await show(query, context, "⚠️ Ek broadcast pehle se chal raha hai.")
+        await _start_broadcast(query, context, uid, seg, list_user_ids(seg))
+        return True
+    if act == "bsel":
+        page = int(p[2]) if len(p) > 2 and p[2].isdigit() else 0
+        text, kb = bc_select_page(context, page)
+        await show(query, context, text, kb)
+        return True
+    if act == "bst" and len(p) >= 4:
+        try:
+            target, page = int(p[2]), int(p[3])
+        except ValueError:
             return True
-        n = len(list_user_ids(seg))
-        await show(query, context, f"📣 Bhej raha hoon — {n} users. Poora hone pe summary aayegi.")
-        context.application.create_task(_run_broadcast(context.application, uid, src[0], src[1], seg))
+        sel = list(context.user_data.get("bc_sel") or [])
+        if target in sel:
+            sel.remove(target)
+        else:
+            sel.append(target)
+        context.user_data["bc_sel"] = sel
+        text, kb = bc_select_page(context, page)
+        await show(query, context, text, kb)
+        return True
+    if act == "bsc":
+        context.user_data.pop("bc_sel", None)
+        page = int(p[2]) if len(p) > 2 and p[2].isdigit() else 0
+        text, kb = bc_select_page(context, page)
+        await show(query, context, text, kb)
+        return True
+    if act == "bsd":
+        sel = list(context.user_data.get("bc_sel") or [])
+        if not sel:
+            await query.answer("Pehle kam se kam ek user chunein.", show_alert=True)
+            return True
+        await _start_broadcast(query, context, uid, "sel", sel)
+        return True
+    if act == "bcl":
+        text, kb = bc_list_screen()
+        await show(query, context, text, kb)
+        return True
+    if act == "bre" and len(p) > 2 and p[2].isdigit():
+        row = broadcasts.get(int(p[2]))
+        if not row or row[5]:
+            await query.answer("Ye broadcast recall ho chuka ya mila nahi.", show_alert=True)
+            return True
+        bc_id, aud, total, sent, created, _ = row
+        await show(query, context,
+                   f"↩️ <b>Broadcast #{bc_id} wapas lein?</b>\n\n👥 {BC_NAMES.get(aud, aud)} — {sent} users ko gaya\n"
+                   f"🕐 {fmt_date(created)}\n\nSabke chat se ye message hat jayega (48 ghante ke andar hi ho sakta hai).",
+                   InlineKeyboardMarkup([[btn("✅ Haan, wapas lo", RED, callback_data=f"adm:brg:{bc_id}")],
+                                         [btn("✖️ Nahi", callback_data="adm:bcl")]]))
+        return True
+    if act == "brg" and len(p) > 2 and p[2].isdigit():
+        bc_id = int(p[2])
+        row = broadcasts.get(bc_id)
+        if not row or row[5]:
+            await query.answer("Ye broadcast recall ho chuka ya mila nahi.", show_alert=True)
+            return True
+        await show(query, context, f"↩️ Broadcast #{bc_id} wapas le raha hoon...")
+
+        async def go():
+            deleted, failed = await broadcasts.recall(context.bot, bc_id)
+            try:
+                await query.message.edit_text(
+                    f"↩️ <b>Broadcast #{bc_id} recall ho gaya</b>\n\n🗑️ Hata diya: {deleted}\n"
+                    f"⚠️ Nahi hata (user ne delete kiya / 48 ghante se purana): {failed}",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=InlineKeyboardMarkup([[btn("👑 Panel", callback_data="adm:home")]]))
+            except Exception:
+                pass
+        context.application.create_task(go())
         return True
     if act == "wd":
         import referral
@@ -469,7 +634,7 @@ async def handle_admin_callback(query, context, uid: int, data: str) -> bool:
                    InlineKeyboardMarkup([[btn("⬅️ Wapas", callback_data=f"adm:v:{target}:{seg}:{page}")]]))
         return True
 
-    text, kb = user_card(target, seg, page)
+    text, kb = await user_card(context.bot, target, seg, page)
     await show(query, context, note + text, kb)
     return True
 
@@ -487,7 +652,8 @@ async def handle_admin_input(update: Update, context, uid: int, action: str) -> 
     if action == "adm_find":
         context.user_data.pop("action", None)
         u = find_user(text)
-        out, kb = user_card(u["user_id"]) if u else ("❌ User nahi mila. (User ne /start kiya hona chahiye.)", None)
+        out, kb = (await user_card(context.bot, u["user_id"])) if u else \
+            ("❌ User nahi mila. (User ne /start kiya hona chahiye.)", None)
         m = await msg.reply_text(out, parse_mode=ParseMode.HTML, reply_markup=kb, disable_web_page_preview=True)
         track(context, m)
         return True
@@ -513,7 +679,7 @@ async def handle_admin_input(update: Update, context, uid: int, action: str) -> 
         new_exp = await _change_days(context.bot, target, sign * days)
         note = (f"✅ {sign * days:+g} din — expiry {fmt_date(new_exp)}"
                 + ("  (user ko bata diya)" if sign > 0 else "  (user ko message nahi gaya)") + "\n\n")
-        out, kb = user_card(target, seg or "all", int(page) if page.isdigit() else 0)
+        out, kb = await user_card(context.bot, target, seg or "all", int(page) if page.isdigit() else 0)
         m = await msg.reply_text(note + out, parse_mode=ParseMode.HTML, reply_markup=kb,
                                  disable_web_page_preview=True)
         track(context, m)
@@ -532,16 +698,9 @@ async def handle_admin_input(update: Update, context, uid: int, action: str) -> 
     if action == "adm_bc":
         context.user_data.pop("action", None)
         context.user_data["bc_src"] = (msg.chat_id, msg.message_id)
-        counts = {s: len(list_user_ids(s)) for s in ("all", "paid_or_trial", "trial", "expired")}
-        m = await msg.reply_text(
-            "📣 <b>Ye message kisko bhejna hai?</b>", parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup([
-                [btn(f"👥 Sabko ({counts['all']})", callback_data="adm:bcgo:all")],
-                [btn(f"✅ Plan/Trial chalu ({counts['paid_or_trial']})", callback_data="adm:bcgo:paid_or_trial")],
-                [btn(f"🎁 Sirf Trial ({counts['trial']})", callback_data="adm:bcgo:trial")],
-                [btn(f"⌛ Plan khatam ({counts['expired']})", callback_data="adm:bcgo:expired")],
-                [btn("❌ Cancel", callback_data="adm:home")],
-            ]))
+        context.user_data.pop("bc_sel", None)
+        m = await msg.reply_text("📣 <b>Ye message kisko bhejna hai?</b>\n<i>Bracket mein kitne users hain.</i>",
+                                 parse_mode=ParseMode.HTML, reply_markup=bc_audience_kb())
         track(context, m)
         return True
     return False

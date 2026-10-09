@@ -359,6 +359,10 @@ def list_user_ids(segment: str = "all") -> list:
         where += " AND " + _SEGMENTS[segment]
     elif segment == "paid_or_trial":
         where += " AND expires_at > NOW()"
+    elif segment == "en":
+        where += " AND lang = 'en'"
+    elif segment == "hi":
+        where += " AND COALESCE(lang, 'hi') <> 'en'"
     try:
         with get_db() as conn:
             with conn.cursor() as cur:
