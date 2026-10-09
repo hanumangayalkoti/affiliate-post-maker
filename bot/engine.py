@@ -872,7 +872,21 @@ async def post_other(context, uid: int, task: dict, payload: dict, lang: str = "
 
     dup_keys, extra_keys, why = (await _other_dup_keys(payload)) if cfg.get("dup_check", True) \
         else ([], [], "")
-    ok, when = claim_posted(uid, tid, *dup_keys)
+    if why == "product" and len(dup_keys) > 1:
+        # Kai product ek post mein: skip SIRF tab jab saare pehle post ho chuke hon.
+        # Ek bhi naya ho to post jaati hai (nayi deal na chhoote). Jo naye the wahi
+        # claim hote hain — fail hone pe wahi wapas hote hain.
+        fresh_keys, when = [], None
+        for k in dup_keys:
+            got, w = claim_posted(uid, tid, k)
+            if got:
+                fresh_keys.append(k)
+            else:
+                when = when or w
+        ok = bool(fresh_keys)
+        dup_keys = fresh_keys
+    else:
+        ok, when = claim_posted(uid, tid, *dup_keys)
     if not ok:
         reason = {"product": tr(lang, "same product", "same product"),
                   "caption": tr(lang, "same caption", "same caption")}.get(why, "")
