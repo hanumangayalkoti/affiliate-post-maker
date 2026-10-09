@@ -632,20 +632,25 @@ async def make_post_image(raw: bytes, product: dict, cfg: dict, allow_card: bool
     card_cfg = cfg.get("card") or {}
     wm = cfg.get("watermark", {})
     badge = bool(cfg.get("amazon_badge", True))
+    if not _wm_on(cfg, "amazon"):
+        wm = {}                              # Amazon posts pe watermark OFF
     if allow_card and card_cfg.get("enabled"):
         out = await asyncio.to_thread(render_card, raw, product, card_cfg, wm, badge)
         if out:
             return out, True
-    if _wm_on(cfg) or badge:
-        out = await asyncio.to_thread(apply_watermark, raw, wm if _wm_on(cfg) else {},
+    if _wm_on(cfg, "amazon") or badge:
+        out = await asyncio.to_thread(apply_watermark, raw, wm if _wm_on(cfg, "amazon") else {},
                                       card_cfg.get("font", "poppins"), badge)
         return out, False
     return raw, False
 
 
-def _wm_on(cfg: dict) -> bool:
+def _wm_on(cfg: dict, kind: str = "amazon") -> bool:
+    """Watermark lagana hai? kind = 'amazon' / 'other' — task mein dono ka alag ON/OFF."""
     wm = cfg.get("watermark", {})
-    return bool(wm.get("enabled") and (wm.get("text") or "").strip())
+    if not (wm.get("enabled") and (wm.get("text") or "").strip()):
+        return False
+    return bool(cfg.get("wm_amazon" if kind == "amazon" else "wm_other", True))
 
 
 # =============================================================================
@@ -689,7 +694,7 @@ async def post_amazon_product(context, uid: int, task: dict, product: dict, lang
 
     note = ""
     if img_bytes:
-        note = ("Image Card" if used_card else "Amazon") + (" + Watermark" if _wm_on(cfg) else "")
+        note = ("Image Card" if used_card else "Amazon") + (" + Watermark" if _wm_on(cfg, "amazon") else "")
 
     try:
         if img_bytes:
@@ -780,11 +785,11 @@ async def post_amazon_original(context, uid: int, task: dict, msg, raw_plain: st
             src = "Image Card" if used_card else "Amazon photo"
     if img_bytes is None and msg is not None and msg.photo:
         raw = await _get_photo_bytes(context.bot, msg.photo[-1].file_id)
-        if raw and _wm_on(cfg):
+        if raw and _wm_on(cfg, "amazon"):
             raw = await asyncio.to_thread(apply_watermark, raw, cfg.get("watermark", {}),
                                           (cfg.get("card") or {}).get("font", "poppins"))
         img_bytes, src = raw, tr(lang, "original photo", "original photo")
-    if img_bytes and _wm_on(cfg) and not used_card and src != "original photo":
+    if img_bytes and _wm_on(cfg, "amazon") and not used_card and src != "original photo":
         src += " + Watermark"
 
     markup = build_final_markup(cfg, asin=asins[0] if asins else "")
@@ -855,7 +860,8 @@ async def _other_dup_keys(payload: dict):
     return [old], [], ""
 
 
-async def post_other(context, uid: int, task: dict, payload: dict, lang: str = "hi"):
+async def post_other(context, uid: int, task: dict, payload: dict, lang: str = "hi",
+                     wm_kind: str = "other"):
     """Non-Amazon post. Returns (status, detail)."""
     cfg     = task["cfg"]
     tid     = task["id"]
@@ -901,7 +907,7 @@ async def post_other(context, uid: int, task: dict, payload: dict, lang: str = "
     try:
         if file_id:
             img_bytes = await _get_photo_bytes(context.bot, file_id)
-            if img_bytes and _wm_on(cfg):
+            if img_bytes and _wm_on(cfg, wm_kind):
                 img_bytes = await asyncio.to_thread(apply_watermark, img_bytes, wm, font)
             caption = wrap_plain_post(body_html, cfg, has_image=True) if text else None
             base = dict(chat_id=channel, caption=caption,
@@ -1352,7 +1358,7 @@ async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str
         cp, ce = _strip_if_on(cp, ce, cfg)
         cp, ce = await replace_amazon_links(cp, ce, amazon_urls, tag)
         payload = _msg_payload(msg, cp, ce)
-        status, detail = await post_other(context, uid, task, payload, lang)
+        status, detail = await post_other(context, uid, task, payload, lang, wm_kind="amazon")
         await _report_other(wait_msg, notify, status, detail, lang, footer, tagged=True)
         return
 

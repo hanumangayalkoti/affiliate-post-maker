@@ -848,21 +848,29 @@ WM_POS_EN = {"top": "⬆️ Top centre", "bottom_right": "↘️ Bottom right",
 def wm_text(task, lang):
     wm = clean_watermark(task["cfg"].get("watermark"))
     pos = (WM_POS_EN if lang == "en" else WM_POSITIONS)[wm["position"]]
+    c = task["cfg"]
+    kinds = tr(lang,
+               f"Shows on: 🛍️ Amazon {_onoff(c.get('wm_amazon', True))}   "
+               f"📝 Non-Amazon {_onoff(c.get('wm_other', True))}\n",
+               f"Kahan lagega: 🛍️ Amazon {_onoff(c.get('wm_amazon', True))}   "
+               f"📝 Non-Amazon {_onoff(c.get('wm_other', True))}\n")
     return tr(lang,
               f"💧 <b>Watermark</b> — {esc(tname(task, lang))}\n\n"
-              f"Status: <b>{'✅ ON' if wm['enabled'] else '❌ OFF'}</b>\n"
+              f"Status: <b>{'✅ ON' if wm['enabled'] else '❌ OFF'}</b>\n" + kinds +
               f"Text: <code>{esc(wm['text'] or 'not set')}</code>\n"
               f"Position: <b>{pos}</b>   Size: <b>{WM_SIZES[wm['size']][0]}</b>   "
               f"Colour: <b>{WM_COLORS[wm['color']][0]}</b>\n\n"
               "<i>Your name on the photo of every post (e.g. @MyDeals or 'Posted On My Deals') — "
-              "on the Image Card and on normal photos. 'Top centre' looks like a clean title line.</i>",
+              "on the Image Card and on normal photos. 'Top centre' looks like a clean title line.\n"
+              "Tap 🛍️ Amazon / 📝 Non-Amazon to choose which posts get it.</i>",
               f"💧 <b>Watermark</b> — {esc(tname(task, lang))}\n\n"
-              f"Status: <b>{'✅ ON' if wm['enabled'] else '❌ OFF'}</b>\n"
+              f"Status: <b>{'✅ ON' if wm['enabled'] else '❌ OFF'}</b>\n" + kinds +
               f"Text: <code>{esc(wm['text'] or 'set nahi')}</code>\n"
               f"Jagah: <b>{pos}</b>   Size: <b>{WM_SIZES[wm['size']][0]}</b>   "
               f"Rang: <b>{WM_COLORS[wm['color']][0]}</b>\n\n"
               "<i>Har post ki photo pe aapka naam (jaise @MyDeals ya 'Posted On My Deals') — Image Card "
-              "aur normal photo dono pe. 'Upar beech' saaf title line jaisa dikhta hai.</i>")
+              "aur normal photo dono pe. 'Upar beech' saaf title line jaisa dikhta hai.\n"
+              "🛍️ Amazon / 📝 Non-Amazon dabake chunein ki kis post pe lage.</i>")
 
 
 def wm_kb(task, lang):
@@ -875,6 +883,8 @@ def wm_kb(task, lang):
          btn(tr(lang, "📍 Position", "📍 Jagah"), callback_data=f"t:{tid}:wmp:position")],
         [btn("🔠 Size", callback_data=f"t:{tid}:wmp:size"),
          btn(tr(lang, "🎨 Colour", "🎨 Rang"), callback_data=f"t:{tid}:wmp:color")],
+        [btn(f"🛍️ Amazon {_onoff(task['cfg'].get('wm_amazon', True))}", callback_data=f"t:{tid}:wmk:amazon"),
+         btn(f"📝 Non-Amazon {_onoff(task['cfg'].get('wm_other', True))}", callback_data=f"t:{tid}:wmk:other")],
         back_row(tid, lang),
     ])
 
@@ -1143,6 +1153,17 @@ async def handle_task_callback(query, context, uid: int, data: str) -> bool:
                                           "Jaise: <code>@MyDeals</code> ya <code>Posted On My Deals</code>"),
                        InlineKeyboardMarkup([back_row(tid, lang)]))
             return True
+        await show(query, context, wm_text(task, lang), wm_kb(task, lang))
+        return True
+    if act == "wmk" and arg in ("amazon", "other"):
+        key = "wm_amazon" if arg == "amazon" else "wm_other"
+        cfg[key] = not cfg.get(key, True)
+        save()
+        await query.answer(tr(lang,
+                              f"💧 Watermark on {'Amazon' if arg == 'amazon' else 'Non-Amazon'} posts: "
+                              f"{'ON' if cfg[key] else 'OFF'}",
+                              f"💧 {'Amazon' if arg == 'amazon' else 'Non-Amazon'} posts pe watermark: "
+                              f"{'ON' if cfg[key] else 'OFF'}"))
         await show(query, context, wm_text(task, lang), wm_kb(task, lang))
         return True
     if act == "wmp" and arg in ("position", "size", "color"):
