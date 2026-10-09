@@ -54,8 +54,9 @@ def _plan_short(u: dict) -> str:
     if u.get("blocked"):
         return "⛔ Block"
     if is_active(uid, u):
-        t = TIERS.get(u.get("tier") or "", {})
-        name = f"{t.get('emoji', '✅')} {t.get('name', 'Plan')}"
+        # Purane users ka tier khaali ho sakta hai — bot unhe Pro maanta hai (current_tier)
+        t = TIERS.get(u.get("tier") or "") or TIERS["pro"]
+        name = f"{t['emoji']} {t['name']}"
         trial = " (🎁 Trial)" if u.get("is_trial") else ""
         return f"{name}{trial} · {days_left(u):.0f} din"
     return "⌛ Khatam" if u.get("expires_at") else "🆓 Free"
