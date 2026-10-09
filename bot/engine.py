@@ -1144,17 +1144,11 @@ async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str
 
         # Post aane ke baad Amazon/Telegram ke intezaar mein user ne settings badli
         # ho sakti hain (Discount Filter, buttons...) — taaza settings se chalo.
-        fresh = get_task(task["id"], uid)
-        if fresh:
-            if fresh.get("paused"):
-                # Post queue mein thi aur beech mein user ne task rok diya
-                await _edit_or_notify(wait_msg, notify,
-                                      tr(lang, f"⏸️ <b>Skipped</b> — {esc(tname)} is paused.",
-                                         f"⏸️ <b>Skip</b> — {esc(tname)} pause hai."),
-                                      parse_mode=ParseMode.HTML)
-                return
-            task = fresh
-            cfg = task["cfg"]
+        fresh = await _still_running(task, uid, lang, tname, wait_msg, notify)
+        if fresh is None:
+            return
+        task = fresh
+        cfg = task["cfg"]
         md = _min_discount(cfg)
 
         if products and not cfg.get("amz_detailed", True):
@@ -1365,12 +1359,35 @@ async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str
     # ==========================================================================
     # NON-AMAZON
     # ==========================================================================
+    fresh = await _still_running(task, uid, lang, tname, None, notify)
+    if fresh is None:
+        return
+    task, cfg = fresh, fresh["cfg"]
     cp, ce  = remove_footer(raw_plain, raw_entities)
     # Doosre channel ka @username / Telegram link hatao (Flipkart, Myntra... sab posts)
     cp, ce  = _strip_if_on(cp, ce, cfg)
     payload = _msg_payload(msg, cp, ce)
     status, detail = await post_other(context, uid, task, payload, lang)
     await _report_other(None, notify, status, detail, lang, footer_plain)
+
+
+async def _still_running(task: dict, uid: int, lang: str, tname: str, wait_msg, notify):
+    """Post bhejne se theek pehle taaza task. Beech mein user ne task DELETE ya
+    PAUSE kar diya ho to None (aur Draft mein wajah). Warna taaza task."""
+    fresh = get_task(task["id"], uid)
+    if fresh is None:
+        await _edit_or_notify(wait_msg, notify,
+                              tr(lang, f"🗑️ <b>Skipped</b> — task {esc(tname)} was deleted.",
+                                 f"🗑️ <b>Skip</b> — task {esc(tname)} delete ho chuka hai."),
+                              parse_mode=ParseMode.HTML)
+        return None
+    if fresh.get("paused"):
+        await _edit_or_notify(wait_msg, notify,
+                              tr(lang, f"⏸️ <b>Skipped</b> — {esc(tname)} is paused.",
+                                 f"⏸️ <b>Skip</b> — {esc(tname)} pause hai."),
+                              parse_mode=ParseMode.HTML)
+        return None
+    return fresh
 
 
 def _min_discount(cfg: dict) -> int:

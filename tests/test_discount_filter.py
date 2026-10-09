@@ -62,6 +62,7 @@ class DiscountFilterTest(unittest.TestCase):
         engine.post_amazon_original = post_original
         engine.post_other = post_other
         engine.setup_problems = lambda cfg, lang: []
+        engine.get_task = lambda tid, uid: make_task_ref[0]     # task abhi bhi hai (delete nahi)
         engine.posts_left_today = lambda uid, tid=None: 100
         self.claims = []
         engine.claim_posted = lambda *a: self.claims.append(a) or (True, None)
