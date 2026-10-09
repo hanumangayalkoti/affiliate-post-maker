@@ -46,6 +46,10 @@ class PanelTest(unittest.TestCase):
         self.assertIn("adm:v:101:all:0", datas)
         self.assertIn("adm:s", datas)                       # ID se dhoondo
 
+    def test_missing_tier_shows_pro(self):
+        u = dict(USERS[1], tier=None, user_id=104)
+        self.assertIn("Pro · 20 din", admin._plan_short(u))
+
     def test_audience_buttons(self):
         datas = [b.callback_data for r in admin.bc_audience_kb().inline_keyboard for b in r]
         for seg in ("all", "paid_or_trial", "active", "trial", "expired", "en", "hi"):
