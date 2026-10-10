@@ -419,7 +419,7 @@ def task_kb(uid: int, task: dict, lang: str) -> InlineKeyboardMarkup:
     d = default_task(uid)
     card_label = "🎨 Image Card" + ("" if lim["card"] else " 🔒")
     rows = [
-        [btn("🏷️ Affiliate Tag", callback_data=f"t:{tid}:tag"),
+        [btn(f"🏷️ Tag: {c.get('tag') or tr(lang, 'set it', 'set karein')} ✏️", callback_data=f"t:{tid}:tag"),
          btn("📢 Destination", callback_data=f"t:{tid}:dest")],
         [btn("📥 Draft", callback_data=f"t:{tid}:src"),
          btn(tr(lang, "🔍 Which Posts", "🔍 Kaun Si Posts"), callback_data=f"t:{tid}:filt")],
@@ -462,12 +462,12 @@ def tag_text(task, lang):
               f"Current: <code>{esc(c.get('tag') or 'not set')}</code>\n\n"
               "Your tag is added to <b>every Amazon link and button</b> of this task, so the "
               "commission comes to you.\n\n"
-              "📝 <b>Send your tag now</b> (example: <code>mydeals-21</code>)\n"
+              "✏️ <b>To change it, just send the new tag now</b> (example: <code>mydeals-21</code>)\n"
               "<i>Find it in Amazon Associates (affiliate-program.amazon.in), top-right corner.</i>",
               f"🏷️ <b>Affiliate Tag</b> — {esc(tname(task, lang))}\n\n"
               f"Abhi: <code>{esc(c.get('tag') or 'set nahi')}</code>\n\n"
               "Ye tag is task ke <b>har Amazon link aur button</b> mein lagega, taaki kamai aapko mile.\n\n"
-              "📝 <b>Ab apna tag bhejein</b> (jaise <code>mydeals-21</code>)\n"
+              "✏️ <b>Badalna hai to abhi naya tag bhej dein</b> (jaise <code>mydeals-21</code>)\n"
               "<i>Amazon Associates (affiliate-program.amazon.in) mein upar right corner pe milta hai.</i>")
 
 

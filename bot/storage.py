@@ -10,6 +10,7 @@ import json
 import copy
 import logging
 import threading
+import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
@@ -133,16 +134,55 @@ def _get_pool():
             if _pool is None:
                 if not DATABASE_URL:
                     raise RuntimeError("DATABASE_URL environment variable set nahi hai!")
-                _pool = pg_pool.ThreadedConnectionPool(1, 10, DATABASE_URL,
-                                                       options="-c timezone=UTC")
+                # keepalives: khaali pade connection ko Railway / network beech mein
+                # chup-chaap na kaate (warna der baad pehla button dabane pe fail hota tha)
+                _pool = pg_pool.ThreadedConnectionPool(
+                    1, 10, DATABASE_URL, options="-c timezone=UTC",
+                    keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=3,
+                    connect_timeout=10)
     return _pool
+
+
+# Connection kab aakhri baar use hua — zyada der khaali pada ho to use karne se pehle check
+_last_used: dict = {}
+_IDLE_CHECK_SECONDS = 60
+
+
+def _healthy_conn(p):
+    """Pool se zinda connection. Der se khaali pada connection pehle 'SELECT 1' se
+    check hota hai; mara hua mila to band karke naya lete hain (3 baar tak).
+
+    Pehle: bot kuch der khaali rehta to Railway beech ke connection kaat deta,
+    agla button/command usi mare connection pe fail hota aur kuch nahi hota —
+    /start dabane tak lagta tha bot 'so gaya' hai."""
+    for _ in range(3):
+        conn = p.getconn()
+        if conn.closed:
+            _last_used.pop(id(conn), None)
+            p.putconn(conn, close=True)
+            continue
+        idle = time.monotonic() - _last_used.get(id(conn), 0.0)
+        if idle < _IDLE_CHECK_SECONDS:
+            return conn
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+            conn.rollback()
+            return conn
+        except Exception:
+            _last_used.pop(id(conn), None)
+            try:
+                p.putconn(conn, close=True)
+            except Exception:
+                pass
+    return p.getconn()                    # aakhri koshish — jo mila
 
 
 @contextmanager
 def get_db():
     """Pool se connection lo — commit karo, galti pe rollback, hamesha wapas do."""
     p = _get_pool()
-    conn = p.getconn()
+    conn = _healthy_conn(p)
     broken = False
     try:
         yield conn
@@ -161,6 +201,10 @@ def get_db():
             broken = True
         raise
     finally:
+        if broken or conn.closed:
+            _last_used.pop(id(conn), None)
+        else:
+            _last_used[id(conn)] = time.monotonic()
         try:
             p.putconn(conn, close=broken or bool(conn.closed))
         except Exception:
