@@ -1005,10 +1005,11 @@ def _msg_payload(msg, text: str, entities) -> dict:
     return p
 
 
-def setup_problems(cfg: dict, lang: str = "hi") -> list:
-    """Post karne se pehle task mein kya-kya set hona baaki hai."""
+def setup_problems(cfg: dict, lang: str = "hi", amazon: bool = True) -> list:
+    """Post karne se pehle task mein kya-kya set hona baaki hai.
+    Tag sirf Amazon post ke liye zaroori — Non-Amazon post bina tag ke bhi jaati hai."""
     probs = []
-    if not (cfg.get("tag") or "").strip():
+    if amazon and not (cfg.get("tag") or "").strip():
         probs.append(tr(lang, "🏷️ Affiliate tag is not set", "🏷️ Affiliate tag set nahi hai"))
     if not str(cfg.get("channel") or "").strip():
         probs.append(tr(lang, "📢 Destination channel is not set", "📢 Destination channel set nahi hai"))
@@ -1080,13 +1081,20 @@ async def process_and_post(context, uid: int, msg, notify, task: dict, lang: str
                         "⚠️ Is message mein koi text ya link nahi mila."))
         return
 
-    probs = setup_problems(cfg, lang)
+    probs = setup_problems(cfg, lang, amazon=bool(amazon_urls))
     if probs:
+        no_tag = amazon_urls and not (cfg.get("tag") or "").strip()
+        extra = tr(lang, "\n\n🏷️ Without the Amazon Affiliate Tag your commission is missed — "
+                         "set it first, then send the deal again.",
+                   "\n\n🏷️ Amazon Affiliate Tag ke bina aapka commission miss ho jayega — "
+                   "pehle tag set karein, phir deal dobara bhejein.") if no_tag else ""
+        kb = InlineKeyboardMarkup([[btn(tr(lang, "🏷️ Set Affiliate Tag", "🏷️ Affiliate Tag set karein"),
+                                        callback_data=f"t:{task['id']}:tag")]]) if no_tag else None
         await notify(tr(lang, f"⚠️ <b>{esc(tname)} — setup is incomplete:</b>\n\n",
                         f"⚠️ <b>{esc(tname)} — setup adhoora hai:</b>\n\n")
-                     + "\n".join(probs)
+                     + "\n".join(probs) + extra
                      + tr(lang, "\n\nOpen /tasks to finish it.", "\n\n/tasks se poora karein."),
-                     parse_mode=ParseMode.HTML)
+                     parse_mode=ParseMode.HTML, reply_markup=kb)
         return
 
     # Amazon / Non-Amazon filter

@@ -38,7 +38,7 @@ class DraftReplyTest(unittest.TestCase):
             return post_status
 
         engine.get_amazon_urls_deep = amazon_urls
-        engine.setup_problems = lambda cfg, lang: []
+        engine.setup_problems = lambda cfg, lang, **kw: []
         engine.posts_left_today = lambda uid, tid=None: left
         engine.limits = lambda uid: {"daily": 500}
         engine.post_other = post_other

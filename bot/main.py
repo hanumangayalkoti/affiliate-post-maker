@@ -39,6 +39,7 @@ import faq
 import gate
 import task_ui
 import broadcasts
+import wizard
 import referral
 from alerts import notify_admins, who, user_card, users_line, now_ist
 from database import (
@@ -60,7 +61,7 @@ from ui import (
 from users import (
     ADMIN_IDS, OWNER_ID, is_admin, is_active, is_blocked, get_user, upsert_user, get_lang,
     set_lang, set_default_task, days_left, limits, start_trial, users_expiring_soon,
-    users_just_expired, set_remind_stage,
+    users_just_expired, set_remind_stage, mark_setup_seen,
 )
 
 TELEGRAM_BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -130,11 +131,9 @@ def home_text(uid: int, first_name: str) -> str:
 def home_kb(uid: int) -> InlineKeyboardMarkup:
     lang = get_lang(uid)
     rows = []
-    d = task_ui.default_task(uid)
-    if d:
-        c = d["cfg"]
-        if not (c.get("tag") or "").strip() or not str(c.get("channel") or "").strip():
-            rows.append([btn(tr(lang, "🚀 Finish Setup", "🚀 Setup poora karein"), callback_data=f"t:{d['id']}")])
+    if wizard.needs_setup(uid):
+        # Koi task poora set nahi aur abhi tak koi post nahi — Setup Wizard
+        rows.append([btn(tr(lang, "🧭 Finish Setup", "🧭 Setup poora karein"), GREEN, callback_data="wz:go")])
     elif not list_tasks(uid):
         rows.append([btn(tr(lang, "➕ Create First Task", "➕ Pehla Task banayein"), GREEN, callback_data="tn")])
     if not is_active(uid):
@@ -142,7 +141,7 @@ def home_kb(uid: int) -> InlineKeyboardMarkup:
     rows += [
         [btn(tr(lang, "📋 My Tasks", "📋 Mere Tasks"), callback_data="tl"),
          btn("💎 Plan", callback_data="open_plan")],
-        [btn("⚙️ Config", callback_data="cfg:"),
+        [btn("⚙️ Settings", callback_data="stg"),
          btn("📊 Stats", callback_data="menu_stats")],
         [btn(tr(lang, "🎁 Refer & Earn", "🎁 Refer & Earn"), GREEN, callback_data="ref:home"),
          btn("❓ Help & FAQ", callback_data="menu_help")],
@@ -428,7 +427,32 @@ HOME_ROW = [btn("🏠 Home", callback_data="home")]
 
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE, uid: int):
+    u = get_user(uid) or {}
+    if not u.get("setup_seen") and wizard.needs_setup(uid):
+        # Naya user — Setup Wizard apne aap (sirf ek baar; skip kiya to Home pe button)
+        mark_setup_seen(uid)
+        task = wizard.wizard_task(uid)
+        if task:
+            context.user_data["wz_tid"] = task["id"]
+            text, kb = wizard.step_screen(uid, task, wizard.first_open_step(task["cfg"]))
+            await _send(update, context, text, kb)
+            return
     await _send(update, context, home_text(uid, update.effective_user.first_name), home_kb(uid))
+
+
+async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE, uid: int):
+    text, kb = wizard.settings_picker(uid)
+    await _send(update, context, text, kb)
+
+
+async def cmd_setup(update: Update, context: ContextTypes.DEFAULT_TYPE, uid: int):
+    task = wizard.wizard_task(uid)
+    if not task:
+        await cmd_start(update, context, uid)
+        return
+    context.user_data["wz_tid"] = task["id"]
+    text, kb = wizard.step_screen(uid, task, wizard.first_open_step(task["cfg"]))
+    await _send(update, context, text, kb)
 
 
 async def cmd_tasks(update, context, uid):
@@ -702,8 +726,17 @@ async def _route_callback(query, context, uid: int, data: str):
         return
     lang = get_lang(uid)
 
+    if data.startswith("wz:"):
+        res = await wizard.handle(query, context, uid, data)
+        if res != "home":
+            return
+        data = "home"
+    if data == "stg":
+        text, kb = wizard.settings_picker(uid)
+        await show(query, context, text, kb)
+        return
     if data in ("home", "cancel"):
-        for k in ("action", "tid", "bkey", "hf_kind"):
+        for k in ("action", "tid", "bkey", "hf_kind", "wz_tid"):
             context.user_data.pop(k, None)
         await show(query, context, home_text(uid, first), home_kb(uid))
         return
@@ -839,7 +872,8 @@ async def cleanup_job(context: ContextTypes.DEFAULT_TYPE):
 # Menu mein wahi jo user baar-baar chalata hai — upar sabse zyada kaam wale.
 # /cancel menu mein nahi (kaam karta hai, bas dikhta nahi).
 USER_COMMANDS = [
-    ("start", "🏠 Home"), ("tasks", "📋 Tasks & Settings"), ("config", "⚙️ All settings at a glance"),
+    ("start", "🏠 Home"), ("tasks", "📋 Tasks"), ("settings", "⚙️ Settings"), ("setup", "🧭 Setup guide"),
+    ("config", "🗂️ All settings at a glance"),
     ("stats", "📊 Today's posts"), ("plan", "💎 Plans & Renew"), ("refer", "🎁 Refer & Earn"),
     ("faq", "❓ FAQ"), ("help", "📖 Help"), ("language", "🌐 Language"), ("paysupport", "🧾 Payment Support"),
 ]
@@ -897,7 +931,8 @@ def main():
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, billing.handle_successful_payment))
 
     user_cmds = [
-        ("start", cmd_start), ("menu", cmd_start), ("tasks", cmd_tasks), ("settings", cmd_tasks),
+        ("start", cmd_start), ("menu", cmd_start), ("tasks", cmd_tasks), ("settings", cmd_settings),
+        ("setting", cmd_settings), ("setup", cmd_setup),
         ("config", cmd_config), ("refer", cmd_refer), ("referral", cmd_refer),
         ("help", cmd_help), ("faq", cmd_faq), ("stats", cmd_stats), ("language", cmd_language),
         ("cancel", cmd_cancel), ("plan", billing.cmd_plan), ("paysupport", billing.cmd_paysupport),

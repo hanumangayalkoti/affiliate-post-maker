@@ -53,7 +53,7 @@ class DeletedTaskTest(unittest.TestCase):
         engine.get_products_by_asins = products
         engine.post_amazon_product = post_amz
         engine.post_other = post_oth
-        engine.setup_problems = lambda c, lang: []
+        engine.setup_problems = lambda c, lang, **kw: []
         engine.posts_left_today = lambda uid, tid=None: 100
         engine.get_task = (lambda tid, uid: task) if exists else (lambda tid, uid: None)
         msg = types.SimpleNamespace(caption=None, text=text, entities=[], caption_entities=[], photo=None,

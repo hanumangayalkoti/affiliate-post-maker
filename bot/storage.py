@@ -249,7 +249,8 @@ def init_db():
                              ("is_trial", "BOOLEAN NOT NULL DEFAULT FALSE"),
                              ("trial_used", "BOOLEAN NOT NULL DEFAULT FALSE"),
                              ("lang", "TEXT"),
-                             ("default_task", "BIGINT")):
+                             ("default_task", "BIGINT"),
+                             ("setup_seen", "BOOLEAN NOT NULL DEFAULT FALSE")):
                 cur.execute(f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {col} {ddl}")
             cur.execute("CREATE INDEX IF NOT EXISTS users_expires_idx ON users (expires_at)")
             cur.execute("CREATE INDEX IF NOT EXISTS users_username_idx ON users (LOWER(username))")
