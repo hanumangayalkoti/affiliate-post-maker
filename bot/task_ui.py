@@ -223,15 +223,34 @@ def picker_kb(kind: str, lang: str) -> ReplyKeyboardMarkup:
 
 
 async def show_picker(context, message, kind: str, lang: str):
+    await _delete_picker_msgs(context, context.bot, message.chat_id)     # purana prompt dobara na dikhe
     m = await message.reply_text(
         tr(lang, "👇 Tap the button below and pick your channel.", "👇 Neeche button dabake apna channel chunein."),
         reply_markup=picker_kb(kind, lang))
-    context.user_data["picker_on"] = True
+    _picker_shown(context, m)
     track(context, m)
 
 
+def _picker_shown(context, m):
+    """'Channel chunein' wala message dikha — yaad rakho taaki baad mein hata sakein."""
+    context.user_data["picker_on"] = True
+    ids = context.user_data.setdefault("picker_ids", [])
+    if getattr(m, "message_id", None):
+        ids.append(m.message_id)
+        del ids[:-5]
+
+
+async def _delete_picker_msgs(context, bot, chat_id: int):
+    for mid in context.user_data.pop("picker_ids", []) or []:
+        try:
+            await bot.delete_message(chat_id, mid)
+        except Exception:
+            pass
+
+
 async def drop_picker(context, bot, chat_id: int):
-    """Neeche wala 'Channel chunein' keyboard hatao (agar dikh raha ho)."""
+    """Neeche wala 'Channel chunein' keyboard + uska '👇 channel chunein' message hatao."""
+    await _delete_picker_msgs(context, bot, chat_id)
     if not context.user_data.pop("picker_on", False):
         return
     try:
@@ -267,6 +286,7 @@ async def handle_chat_shared(update: Update, context):
     tid = context.user_data.get("tid")
     kind = "dest" if shared.request_id == PICK_DEST else "src"
     context.user_data.pop("picker_on", None)
+    await _delete_picker_msgs(context, context.bot, msg.chat_id)
     track(context, msg)
     if action not in ("t_dest", "t_src") or not tid or not get_task(tid, uid):
         m = await msg.reply_text(tr(lang, "⚠️ Open the task in /tasks first, then choose the channel.",
@@ -286,7 +306,7 @@ async def handle_chat_shared(update: Update, context):
         track(context, m)
     else:
         m = await msg.reply_text(out, parse_mode=ParseMode.HTML, reply_markup=picker_kb(kind, lang))
-        context.user_data["picker_on"] = True
+        _picker_shown(context, m)
         track(context, m)
 
 
@@ -1527,13 +1547,14 @@ async def handle_task_input(update: Update, context, uid: int, action: str) -> b
                        "⚠️ Channel samajh nahi aaya.\n👇 Neeche <b>Channel chunein</b> dabake chunein, "
                        "ya channel ka @username bhejein.")
             m = await msg.reply_text(t, parse_mode=ParseMode.HTML, reply_markup=picker_kb(kind, lang))
-            context.user_data["picker_on"] = True
+            _picker_shown(context, m)
             track(context, m)
             return True
         ok, out = await set_task_channel(context.bot, uid, tid, ident, "dest" if action == "t_dest" else "src", lang)
         if ok:
             context.user_data.pop("action", None)
             context.user_data.pop("picker_on", None)
+            await _delete_picker_msgs(context, context.bot, msg.chat_id)
             await msg.reply_text(out, parse_mode=ParseMode.HTML, reply_markup=ReplyKeyboardRemove())  # report
             if await _wizard_next(context, msg, uid, tid):
                 return True
