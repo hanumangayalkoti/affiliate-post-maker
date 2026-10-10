@@ -74,7 +74,7 @@ class WizardTest(unittest.TestCase):
         self.assertIn("wz:go:2", _buttons(kb))
         text, kb = wizard.step_screen(1, {"id": 9, "cfg": dict(FULL)}, 3)
         self.assertIn("wz:sample", _buttons(kb))
-        self.assertIn("t:9:adv", _buttons(kb))
+        self.assertIn("t:9", _buttons(kb))
         self.assertIn("Settings", text)
 
     def test_tag_only_needed_for_amazon(self):
@@ -85,3 +85,29 @@ class WizardTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PickerCleanupTest(unittest.TestCase):
+    def test_back_deletes_choose_channel_message(self):
+        import asyncio
+        import types
+        import task_ui
+        deleted, sent = [], []
+
+        class Bot:
+            async def delete_message(self, chat_id, mid):
+                deleted.append(mid)
+
+            async def send_message(self, chat_id, text, reply_markup=None):
+                sent.append(text)
+                return types.SimpleNamespace(delete=self._noop)
+
+            async def _noop(self):
+                return True
+
+        ctx = types.SimpleNamespace(user_data={}, bot=Bot())
+        task_ui._picker_shown(ctx, types.SimpleNamespace(message_id=55))
+        asyncio.run(task_ui.drop_picker(ctx, ctx.bot, 1))
+        self.assertEqual(deleted, [55])                 # '👇 channel chunein' message hata
+        self.assertEqual(len(sent), 1)                  # neeche ka keyboard bhi hata
+        self.assertNotIn("picker_ids", ctx.user_data)

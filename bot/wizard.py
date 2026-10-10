@@ -203,7 +203,7 @@ def step_screen(uid: int, task: dict, step: int):
                 "sakte ho.\n\n"
                 "👉 Iske baad bas Draft channel mein deal daalo — baaki bot kar dega.")
             kb = [[btn(tr(lang, "🧪 Send sample post", "🧪 Sample post bhejo"), GREEN, callback_data="wz:sample")],
-                  [btn(tr(lang, "⚙️ Settings", "⚙️ Settings"), BLUE, callback_data=f"t:{task['id']}:adv"),
+                  [btn(tr(lang, "⚙️ Settings", "⚙️ Settings"), BLUE, callback_data=f"t:{task['id']}"),
                    btn("🏠 Home", callback_data="home")]]
         kb = [r for r in kb if r]
         return text, InlineKeyboardMarkup(kb)
@@ -212,7 +212,7 @@ def step_screen(uid: int, task: dict, step: int):
 
 
 def settings_picker(uid: int):
-    """⚙️ Settings — task chuno, seedha uski Advanced Settings."""
+    """⚙️ Settings — task chuno, uski settings screen (task screen) khule."""
     from task_ui import tname
     lang = get_lang(uid)
     tasks = list_tasks(uid)
@@ -220,7 +220,7 @@ def settings_picker(uid: int):
         return (tr(lang, "⚙️ You have no task yet. Create one first.",
                    "⚙️ Abhi koi task nahi hai. Pehle task banayein."),
                 InlineKeyboardMarkup([[btn(tr(lang, "➕ New Task", "➕ Naya Task"), GREEN, callback_data="tn")]]))
-    rows = [[btn(f"{'⏸️' if t['paused'] else '▶️'} {tname(t, lang)}", callback_data=f"t:{t['id']}:adv")]
+    rows = [[btn(f"{'⏸️' if t['paused'] else '▶️'} {tname(t, lang)}", callback_data=f"t:{t['id']}")]
             for t in tasks[:20]]
     rows.append([btn("🏠 Home", callback_data="home")])
     return (tr(lang, "⚙️ <b>Settings</b>\n\nWhich task's settings do you want to change?",
@@ -298,7 +298,7 @@ async def handle(query, context, uid: int, data: str):
         context.user_data.pop("wz_tid", None)
         await show(query, context, text, InlineKeyboardMarkup([
             [btn(tr(lang, "🔁 Try again", "🔁 Dobara bhejo"), callback_data="wz:sample")] if not ok else [],
-            [btn("⚙️ Settings", BLUE, callback_data=f"t:{tid}:adv"), btn("🏠 Home", callback_data="home")],
+            [btn("⚙️ Settings", BLUE, callback_data=f"t:{tid}"), btn("🏠 Home", callback_data="home")],
         ]))
         return True
     return True
