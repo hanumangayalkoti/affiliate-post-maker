@@ -449,6 +449,27 @@ def task_text(uid: int, task: dict, lang: str) -> str:
     return "\n".join(lines)
 
 
+def default_info_text(uid: int, task: dict, lang: str) -> str:
+    """⭐ Make Default dabane pe — Default task kya hota hai."""
+    d = default_task(uid)
+    now = esc(tname(d, lang)) if d else tr(lang, "none", "koi nahi")
+    return tr(lang,
+        f"⭐ <b>Make \"{esc(tname(task, lang))}\" the Default task?</b>\n\n"
+        "ℹ️ <b>What does Default do?</b>\n"
+        "• Deals / links you send to the bot <b>directly in DM</b> are posted using the <b>Default task</b> — "
+        "its Affiliate Tag, design and Destination channel.\n"
+        "• Posts in your Draft channels are <b>not affected</b> — every task keeps working from its own Draft.\n"
+        "• Only <b>one</b> task can be Default at a time.\n\n"
+        f"Current Default: <b>{now}</b>",
+        f"⭐ <b>\"{esc(tname(task, lang))}\" ko Default task banayein?</b>\n\n"
+        "ℹ️ <b>Default se kya hota hai?</b>\n"
+        "• Jo deal / link aap bot ko <b>seedha DM mein</b> bhejte ho, wo <b>Default task</b> se post hoti hai — "
+        "usi ka Affiliate Tag, design aur Destination channel lagta hai.\n"
+        "• Draft channel wali posts pe <b>koi asar nahi</b> — har task apne Draft se chalta rahega.\n"
+        "• Ek time pe sirf <b>ek</b> task Default ho sakta hai.\n\n"
+        f"Abhi Default: <b>{now}</b>")
+
+
 def task_kb(uid: int, task: dict, lang: str) -> InlineKeyboardMarkup:
     """Main task screen — sirf zaroori settings. Baaki sab ⚙️ Advanced Settings mein."""
     tid = task["id"]
@@ -1335,6 +1356,13 @@ async def handle_task_callback(query, context, uid: int, data: str) -> bool:
         return True
 
     if act == "def":
+        # Pehle samjhao Default kya hota hai — wahi message badalta hai (chat saaf)
+        await show(query, context, default_info_text(uid, task, lang), InlineKeyboardMarkup([
+            [btn(tr(lang, "⭐ Yes, make Default", "⭐ Haan, Default banao"), GREEN, callback_data=f"t:{tid}:defok")],
+            [btn(tr(lang, "⬅️ Back", "⬅️ Wapas"), callback_data=f"t:{tid}")]]))
+        return True
+
+    if act == "defok":
         set_default_task(uid, tid)
         await query.answer(tr(lang, "⭐ Default task set", "⭐ Default task set ho gaya"))
         task = get_task(tid, uid)
