@@ -119,8 +119,9 @@ def _onoff(v) -> str:
     return "✅" if v else "❌"
 
 
-def back_row(tid: int, lang: str):
-    return [btn(tr(lang, "⬅️ Back", "⬅️ Wapas"), callback_data=f"t:{tid}"),
+def back_row(tid: int, lang: str, adv: bool = False):
+    """adv=True: Advanced Settings ke andar wali screen — Back wahi le jaata hai."""
+    return [btn(tr(lang, "⬅️ Back", "⬅️ Wapas"), callback_data=f"t:{tid}:adv" if adv else f"t:{tid}"),
             btn(tr(lang, "📋 All Tasks", "📋 Saare Tasks"), callback_data="tl")]
 
 
@@ -413,38 +414,21 @@ def task_text(uid: int, task: dict, lang: str) -> str:
 
 
 def task_kb(uid: int, task: dict, lang: str) -> InlineKeyboardMarkup:
+    """Main task screen — sirf zaroori settings. Baaki sab ⚙️ Advanced Settings mein."""
     tid = task["id"]
-    c = task["cfg"]
-    lim = limits(uid)
     d = default_task(uid)
-    card_label = "🎨 Image Card" + ("" if lim["card"] else " 🔒")
-    rows = [
-        [btn("🏷️ Amzn Affiliate Tag", callback_data=f"t:{tid}:tag"),
-         btn("📢 Destination", callback_data=f"t:{tid}:dest")],
-        [btn("📥 Draft", callback_data=f"t:{tid}:src"),
-         btn(tr(lang, "🔍 Which Posts", "🔍 Kaun Si Posts"), callback_data=f"t:{tid}:filt")],
-        [btn(card_label, callback_data=f"t:{tid}:card"),
-         btn("💧 Watermark", callback_data=f"t:{tid}:wm")],
-        [btn(tr(lang, "🛍️ Post Details", "🛍️ Post Details"), callback_data=f"t:{tid}:amz"),
-         btn(tr(lang, "🎛️ Buttons", "🎛️ Buttons"), callback_data=f"t:{tid}:btns")],
-        [btn("🔝 Header", callback_data=f"t:{tid}:hf:header"),
-         btn("🔚 Footer", callback_data=f"t:{tid}:hf:footer")],
-        [btn(f"♻️ Duplicate {_onoff(c.get('dup_check', True))}", callback_data=f"t:{tid}:dup"),
-         btn(f"🔔 {tr(lang, 'Notification', 'Notification')}", callback_data=f"t:{tid}:silent")],
-        [btn(f"📉 Discount Filter — {disc_label(c, lang)}", callback_data=f"t:{tid}:disc")],
-    ]
-    # Pause / Resume chhota — Search Links ke bagal mein (2×2 jaisa)
     if task["paused"]:
         pause_btn = btn(tr(lang, "▶️ Resume", "▶️ Chalu karein"), GREEN, callback_data=f"t:{tid}:resume")
     else:
         pause_btn = btn(tr(lang, "⏸️ Pause", "⏸️ Rokein"), callback_data=f"t:{tid}:pause")
-    rows.append([btn(f"🔗 Search Links {_onoff(c.get('search_links'))}", callback_data=f"t:{tid}:search"),
-                 pause_btn])
-    # Lamba naam — poori line, taaki text pura dikhe
-    rows.append([btn(f"{_onoff(c.get('strip_promo', True))} 🚫 Remove t.me link and Username",
-                     callback_data=f"t:{tid}:promo")])
-    rows.append([btn(f"🛒 Amazon Logo {_onoff(c.get('amazon_badge', True))}", callback_data=f"t:{tid}:badge"),
-                 btn(f"🅱️ Bold Link {_onoff(c.get('bold_links', True))}", callback_data=f"t:{tid}:bold")])
+    rows = [
+        [btn("🏷️ Amzn Affiliate Tag", callback_data=f"t:{tid}:tag")],
+        [btn("📥 Draft", callback_data=f"t:{tid}:src"),
+         btn("📢 Destination", callback_data=f"t:{tid}:dest")],
+        [btn(tr(lang, "🔍 Which Posts", "🔍 Kaun Si Posts"), callback_data=f"t:{tid}:filt"),
+         pause_btn],
+        [btn(tr(lang, "⚙️ Advanced Settings", "⚙️ Advanced Settings"), BLUE, callback_data=f"t:{tid}:adv")],
+    ]
     if not (d and d["id"] == tid):
         rows.append([btn(tr(lang, "⭐ Make Default", "⭐ Default banayein"), callback_data=f"t:{tid}:def")])
     rows.append([btn(tr(lang, "✏️ Rename", "✏️ Naam badlein"), callback_data=f"t:{tid}:ren"),
@@ -452,6 +436,77 @@ def task_kb(uid: int, task: dict, lang: str) -> InlineKeyboardMarkup:
     rows.append([btn(tr(lang, "📋 All Tasks", "📋 Saare Tasks"), callback_data="tl"),
                  btn("🏠 Home", callback_data="home")])
     return InlineKeyboardMarkup(rows)
+
+
+def adv_text(task, lang) -> str:
+    return tr(lang,
+              f"⚙️ <b>Advanced Settings</b> — {esc(tname(task, lang))}\n\n"
+              "Design, filters and extra options. Tap any setting to change it.\n"
+              "<i>Not sure what something does? Tap ℹ️ What is this?</i>",
+              f"⚙️ <b>Advanced Settings</b> — {esc(tname(task, lang))}\n\n"
+              "Design, filter aur baaki options. Koi bhi setting dabake badlein.\n"
+              "<i>Samajh na aaye to ℹ️ Ye kya hai? dabayein.</i>")
+
+
+def adv_kb(uid: int, task: dict, lang: str) -> InlineKeyboardMarkup:
+    tid = task["id"]
+    c = task["cfg"]
+    lim = limits(uid)
+    card_label = "🎨 Image Card" + ("" if lim["card"] else " 🔒")
+    return InlineKeyboardMarkup([
+        [btn(card_label, callback_data=f"t:{tid}:card"),
+         btn("💧 Watermark", callback_data=f"t:{tid}:wm")],
+        [btn(tr(lang, "🛍️ Post Details", "🛍️ Post Details"), callback_data=f"t:{tid}:amz"),
+         btn(tr(lang, "🎛️ Buttons", "🎛️ Buttons"), callback_data=f"t:{tid}:btns")],
+        [btn("🔝 Header", callback_data=f"t:{tid}:hf:header"),
+         btn("🔚 Footer", callback_data=f"t:{tid}:hf:footer")],
+        [btn(f"📉 Discount Filter — {disc_label(c, lang)}", callback_data=f"t:{tid}:disc")],
+        [btn(f"♻️ Duplicate {_onoff(c.get('dup_check', True))}", callback_data=f"t:{tid}:dup"),
+         btn(f"🔔 {tr(lang, 'Notification', 'Notification')}", callback_data=f"t:{tid}:silent")],
+        [btn(f"🔗 Search Links {_onoff(c.get('search_links'))}", callback_data=f"t:{tid}:search"),
+         btn(f"🅱️ Bold Link {_onoff(c.get('bold_links', True))}", callback_data=f"t:{tid}:bold")],
+        [btn(f"{_onoff(c.get('strip_promo', True))} 🚫 Remove t.me link and Username",
+             callback_data=f"t:{tid}:promo")],
+        [btn(f"🛒 Amazon Logo {_onoff(c.get('amazon_badge', True))}", callback_data=f"t:{tid}:badge"),
+         btn(tr(lang, "ℹ️ What is this?", "ℹ️ Ye kya hai?"), BLUE, callback_data=f"t:{tid}:advinfo")],
+        [btn(tr(lang, "⬅️ Back", "⬅️ Wapas"), callback_data=f"t:{tid}"),
+         btn(tr(lang, "📋 All Tasks", "📋 Saare Tasks"), callback_data="tl")],
+    ])
+
+
+ADV_INFO = [
+    ("🎨 Image Card", "Makes a clean card from the Amazon photo with price, MRP and % off.",
+     "Amazon photo se price, MRP aur % off wala saaf card banata hai."),
+    ("💧 Watermark", "Your name on the photo (e.g. 'Posted in MyDeals'). Choose Amazon / Non-Amazon posts.",
+     "Photo pe aapka naam (jaise 'Posted in MyDeals'). Amazon / Non-Amazon post alag chun sakte hain."),
+    ("🛍️ Post Details", "What the caption shows: title, price, MRP, rating, features…",
+     "Caption mein kya dikhe: naam, price, MRP, rating, features…"),
+    ("🎛️ Buttons", "Buttons under every post — Buy Now, Add to Cart, your channel link.",
+     "Har post ke neeche buttons — Buy Now, Add to Cart, aapke channel ka link."),
+    ("🔝🔚 Header / Footer", "A fixed line at the top / bottom of every post.",
+     "Har post ke upar / neeche ek fix line."),
+    ("📉 Discount Filter", "Posts only Amazon deals with at least this much % off.",
+     "Sirf utne ya zyada % off wali Amazon deals post hoti hain."),
+    ("♻️ Duplicate", "Skips the same deal if it came again within 24 hours.",
+     "Same deal 24 ghante mein dobara aaye to skip."),
+    ("🔔 Notification", "Silent = posts go without a sound to your members.",
+     "Silent = members ke phone pe post bina awaaz ke jaati hai."),
+    ("🔗 Search Links", "ON: Amazon search / offer page links are posted too.",
+     "ON: Amazon search / offer page wale link bhi post hote hain."),
+    ("🅱️ Bold Link", "Links in the post look bold. Example — ON: <b>amazon.in/dp/…</b>  OFF: amazon.in/dp/…",
+     "Post ke link bold dikhte hain. Example — ON: <b>amazon.in/dp/…</b>  OFF: amazon.in/dp/…"),
+    ("🚫 Remove t.me / Username", "Removes other channels' @username and t.me links from the caption.",
+     "Caption se doosre channels ke @username aur t.me link hata deta hai."),
+    ("🛒 Amazon Logo", "Small 'available at amazon' logo on Amazon post photos.",
+     "Amazon post ki photo pe chhota 'available at amazon' logo."),
+]
+
+
+def adv_info_text(task, lang) -> str:
+    head = tr(lang, f"ℹ️ <b>What is this?</b> — {esc(tname(task, lang))}\n",
+              f"ℹ️ <b>Ye kya hai?</b> — {esc(tname(task, lang))}\n")
+    lines = [f"\n<b>{name}</b>\n{tr(lang, en, hi)}" for name, en, hi in ADV_INFO]
+    return head + "\n".join(lines)
 
 
 # ── Tag ──────────────────────────────────────────────────────────────────
@@ -704,7 +759,7 @@ def disc_kb(task, lang):
                 GREEN if v == cur else "", callback_data=f"t:{tid}:disc:{v}")
             for v in DISCOUNT_OPTIONS]
     rows = [opts[i:i + 3] for i in range(0, len(opts), 3)]
-    rows.append(back_row(tid, lang))
+    rows.append(back_row(tid, lang, adv=True))
     return InlineKeyboardMarkup(rows)
 
 
@@ -714,7 +769,7 @@ def toggle_kb(task, action, on, lang, on_label=None, off_label=None):
     off_label = off_label or tr(lang, "🟢 Turn ON", "🟢 Chalu karein")
     return InlineKeyboardMarkup([
         [btn(on_label if on else off_label, RED if on else GREEN, callback_data=f"t:{tid}:{action}:t")],
-        back_row(tid, lang),
+        back_row(tid, lang, adv=True),
     ])
 
 
@@ -758,7 +813,7 @@ def amz_kb(task, lang):
                 pair = []
         if pair:
             rows.append(pair)
-    rows.append(back_row(tid, lang))
+    rows.append(back_row(tid, lang, adv=True))
     return InlineKeyboardMarkup(rows)
 
 
@@ -791,7 +846,7 @@ def btns_kb(task, lang):
          btn(BTN_NAMES["cart"], callback_data=f"t:{tid}:b:cart")],
         [btn(BTN_NAMES["btn1"], callback_data=f"t:{tid}:b:btn1"),
          btn(BTN_NAMES["btn2"], callback_data=f"t:{tid}:b:btn2")],
-        back_row(tid, lang),
+        back_row(tid, lang, adv=True),
     ])
 
 
@@ -851,7 +906,7 @@ def hf_kb(task, kind, lang):
         [btn(tr(lang, "✏️ Change Text", "✏️ Text badlein"), callback_data=f"t:{tid}:hf:{kind}:text"),
          btn(tr(lang, "🔴 Turn OFF", "🔴 Band karein") if on else tr(lang, "🟢 Turn ON", "🟢 Chalu karein"),
              RED if on else GREEN, callback_data=f"t:{tid}:hf:{kind}:on")],
-        back_row(tid, lang),
+        back_row(tid, lang, adv=True),
     ])
 
 
@@ -900,7 +955,7 @@ def wm_kb(task, lang):
          btn(tr(lang, "🎨 Colour", "🎨 Rang"), callback_data=f"t:{tid}:wmp:color")],
         [btn(f"🛍️ Amazon {_onoff(task['cfg'].get('wm_amazon', True))}", callback_data=f"t:{tid}:wmk:amazon"),
          btn(f"📝 Non-Amazon {_onoff(task['cfg'].get('wm_other', True))}", callback_data=f"t:{tid}:wmk:other")],
-        back_row(tid, lang),
+        back_row(tid, lang, adv=True),
     ])
 
 
@@ -1023,6 +1078,15 @@ async def handle_task_callback(query, context, uid: int, data: str) -> bool:
         context.user_data.pop("action", None)
         await show(query, context, task_text(uid, task, lang), task_kb(uid, task, lang))
         return True
+    if act == "adv":
+        context.user_data.pop("action", None)
+        await show(query, context, adv_text(task, lang), adv_kb(uid, task, lang))
+        return True
+    if act == "advinfo":
+        # Wahi message badalta hai — chat mein naya message nahi (saaf rehta hai)
+        await show(query, context, adv_info_text(task, lang), InlineKeyboardMarkup([
+            [btn(tr(lang, "⬅️ Back", "⬅️ Wapas"), callback_data=f"t:{tid}:adv")]]))
+        return True
 
     if act == "disc":
         if arg.isdigit() and int(arg) in DISCOUNT_OPTIONS:
@@ -1143,7 +1207,7 @@ async def handle_task_callback(query, context, uid: int, data: str) -> bool:
                 await show(query, context, tr(lang, "🔗 First send the link for this button "
                                                     "(https://... or @channel):",
                                               "🔗 Pehle is button ka link bhejein (https://... ya @channel):"),
-                           InlineKeyboardMarkup([back_row(tid, lang)]))
+                           InlineKeyboardMarkup([back_row(tid, lang, adv=True)]))
                 return True
             b["enabled"] = not b.get("enabled")
             save()
@@ -1154,13 +1218,13 @@ async def handle_task_callback(query, context, uid: int, data: str) -> bool:
             _ask(context, "t_btn_label", tid, bkey=arg)
             await show(query, context, tr(lang, "📝 Send the new button label (max 20 characters):",
                                           "📝 Button ka naya naam bhejein (max 20 character):"),
-                       InlineKeyboardMarkup([back_row(tid, lang)]))
+                       InlineKeyboardMarkup([back_row(tid, lang, adv=True)]))
             return True
         elif arg2 == "link" and arg in ("btn1", "btn2"):
             _ask(context, "t_btn_link", tid, bkey=arg)
             await show(query, context, tr(lang, "🔗 Send the link (https://... or @channel):",
                                           "🔗 Link bhejein (https://... ya @channel):"),
-                       InlineKeyboardMarkup([back_row(tid, lang)]))
+                       InlineKeyboardMarkup([back_row(tid, lang, adv=True)]))
             return True
         await show(query, context, one_btn_text(task, arg, lang), one_btn_kb(task, arg, lang))
         return True
@@ -1179,7 +1243,7 @@ async def handle_task_callback(query, context, uid: int, data: str) -> bool:
                                                 f"<i>Send <code>-</code> to remove it.</i>",
                                           f"✏️ {arg.title()} ka text bhejein (max 120 character).\n"
                                           f"<i>Hatana ho to <code>-</code> bhejein.</i>"),
-                       InlineKeyboardMarkup([back_row(tid, lang)]))
+                       InlineKeyboardMarkup([back_row(tid, lang, adv=True)]))
             return True
         await show(query, context, hf_text(task, arg, lang), hf_kb(task, arg, lang))
         return True
@@ -1198,7 +1262,7 @@ async def handle_task_callback(query, context, uid: int, data: str) -> bool:
                                                 "Example: <code>@MyDeals</code> or <code>Posted On My Deals</code>",
                                           "✏️ Watermark ka text bhejein (max 40 character).\n"
                                           "Jaise: <code>@MyDeals</code> ya <code>Posted On My Deals</code>"),
-                       InlineKeyboardMarkup([back_row(tid, lang)]))
+                       InlineKeyboardMarkup([back_row(tid, lang, adv=True)]))
             return True
         await show(query, context, wm_text(task, lang), wm_kb(task, lang))
         return True

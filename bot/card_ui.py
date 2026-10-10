@@ -107,7 +107,7 @@ def home_kb(task, lang) -> InlineKeyboardMarkup:
          p("discount_color", tr(lang, "🔴 Discount Colour", "🔴 Discount ka Rang"))],
         [btn("💧 Watermark", callback_data=f"t:{tid}:wm"),
          btn(tr(lang, "↩️ Reset", "↩️ Default"), callback_data=f"{base}:reset")],
-        [btn(tr(lang, "⬅️ Back", "⬅️ Wapas"), callback_data=f"t:{tid}"),
+        [btn(tr(lang, "⬅️ Back", "⬅️ Wapas"), callback_data=f"t:{tid}:adv"),
          btn(tr(lang, "📋 All Tasks", "📋 Saare Tasks"), callback_data="tl")],
     ])
 
@@ -195,7 +195,7 @@ async def handle(query, context, uid, task, parts, lang):
     if not limits(uid)["card"]:
         kb = upgrade_kb(lang)
         kb = InlineKeyboardMarkup(list(kb.inline_keyboard) +
-                                  [[btn(tr(lang, "⬅️ Back", "⬅️ Wapas"), callback_data=f"t:{tid}")]])
+                                  [[btn(tr(lang, "⬅️ Back", "⬅️ Wapas"), callback_data=f"t:{tid}:adv")]])
         await show(query, context, locked_text(lang), kb)
         return
 
