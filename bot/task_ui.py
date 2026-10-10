@@ -241,6 +241,20 @@ async def drop_picker(context, bot, chat_id: int):
         pass
 
 
+async def _wizard_next(context, msg, uid: int, tid: int) -> bool:
+    """Setup Wizard chal raha ho to task screen ki jagah agla step (naya message)."""
+    import wizard
+
+    async def send(text, kb):
+        m = await msg.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb, disable_web_page_preview=True)
+        track(context, m)
+    try:
+        return await wizard.continue_after_setting(context, send, uid, tid)
+    except Exception as e:
+        logger.error(f"wizard next error: {e}")
+        return False
+
+
 async def handle_chat_shared(update: Update, context):
     """User ne 'Channel chunein' se channel chuna."""
     msg = update.message
@@ -264,6 +278,8 @@ async def handle_chat_shared(update: Update, context):
     if ok:
         context.user_data.pop("action", None)
         await msg.reply_text(out, parse_mode=ParseMode.HTML, reply_markup=ReplyKeyboardRemove())  # report
+        if await _wizard_next(context, msg, uid, tid):
+            return
         task = get_task(tid, uid)
         m = await msg.reply_text(task_text(uid, task, lang), parse_mode=ParseMode.HTML,
                                  reply_markup=task_kb(uid, task, lang), disable_web_page_preview=True)
@@ -1133,6 +1149,12 @@ async def handle_task_callback(query, context, uid: int, data: str) -> bool:
             await notify_task_event(query.get_bot(), uid, task, "🏷️ <b>Tag badla</b>"
                                     + (f" (pehle <code>{esc(old_tag)}</code>)" if old_tag else ""))
         await query.answer(tr(lang, "✅ Tag changed", "✅ Tag badal gaya"))
+        if context.user_data.get("wz_tid") == tid:
+            import wizard
+            text, kb = wizard.step_screen(uid, get_task(tid, uid) or task,
+                                          wizard.first_open_step(cfg))
+            await show(query, context, text, kb)
+            return True
         await show(query, context,
                    tr(lang, f"✅ <b>Amazon Affiliate Tag changed</b>\n<code>{esc(old_tag or '—')}</code> ➜ "
                             f"<code>{esc(new_tag)}</code>\n\n",
@@ -1485,6 +1507,8 @@ async def handle_task_input(update: Update, context, uid: int, action: str) -> b
                                     + (f" (pehle <code>{esc(old_tag)}</code>)" if old_tag else ""))
         await reply(tr(lang, f"✅ <b>Tag saved:</b> <code>{esc(text)}</code>",
                        f"✅ <b>Tag save ho gaya:</b> <code>{esc(text)}</code>"))
+        if await _wizard_next(context, msg, uid, tid):
+            return True
         await reply(task_text(uid, task, lang), task_kb(uid, task, lang))
         return True
 
@@ -1511,6 +1535,8 @@ async def handle_task_input(update: Update, context, uid: int, action: str) -> b
             context.user_data.pop("action", None)
             context.user_data.pop("picker_on", None)
             await msg.reply_text(out, parse_mode=ParseMode.HTML, reply_markup=ReplyKeyboardRemove())  # report
+            if await _wizard_next(context, msg, uid, tid):
+                return True
             task = get_task(tid, uid)
             await reply(task_text(uid, task, lang), task_kb(uid, task, lang))
         else:

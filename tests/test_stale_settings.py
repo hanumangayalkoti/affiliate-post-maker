@@ -73,7 +73,7 @@ class FreshSettingsTest(unittest.TestCase):
         engine.get_amazon_urls_deep = amazon_urls
         engine.get_products_by_asins = products_by_asins
         engine.post_amazon_product = post_product
-        engine.setup_problems = lambda cfg, lang: []
+        engine.setup_problems = lambda cfg, lang, **kw: []
         engine.posts_left_today = lambda uid, tid=None: 100
 
         base = {"name": "T", "tag": "dk-21", "channel": "-1005", "channel_title": "Ch",

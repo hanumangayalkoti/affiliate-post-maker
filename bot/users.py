@@ -33,7 +33,7 @@ OWNER_ID  = ADMIN_IDS[0] if ADMIN_IDS else 0
 
 _USER_COLS = ["user_id", "username", "first_name", "joined_at", "expires_at",
               "blocked", "bot_blocked", "remind_stage", "total_posts", "last_seen",
-              "tier", "is_trial", "trial_used", "lang", "default_task"]
+              "tier", "is_trial", "trial_used", "lang", "default_task", "setup_seen"]
 
 
 def is_admin(uid) -> bool:
@@ -304,6 +304,11 @@ def set_blocked(user_id: int, blocked: bool) -> bool:
 
 def mark_bot_blocked(user_id: int):
     _exec("UPDATE users SET bot_blocked = TRUE WHERE user_id = %s", (user_id,), user_id)
+
+
+def mark_setup_seen(user_id: int):
+    """Setup Wizard ek baar apne aap dikh chuka — dobara apne aap nahi khulega."""
+    _exec("UPDATE users SET setup_seen = TRUE WHERE user_id = %s", (user_id,), user_id)
 
 
 def set_remind_stage(user_id: int, stage: int):
