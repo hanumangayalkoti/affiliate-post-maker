@@ -391,7 +391,7 @@ def task_text(uid: int, task: dict, lang: str) -> str:
         f"📋 <b>{esc(tname(task, lang))}</b> — {state}{star}\n",
         f"📥 Draft: {chan(c.get('source_title'), c.get('source_username'), tr(lang, '<i>not set (DM works)</i>', '<i>set nahi (DM se chalega)</i>'))}",
         f"📢 Destination: {chan(c.get('channel_title'), c.get('channel_username'), '❌ ' + tr(lang, 'not set', 'set nahi'))}",
-        f"🏷️ {tr(lang, 'Affiliate Tag', 'Affiliate Tag')}: <code>{esc(c.get('tag') or '—')}</code>\n",
+        f"🏷️ Amazon Affiliate Tag: <code>{esc(c.get('tag') or '—')}</code>\n",
         f"🔍 {tr(lang, 'Posts', 'Posts')}: {' + '.join(posts)}",
         f"♻️ {tr(lang, 'Duplicate check', 'Duplicate check')}: {_onoff(c.get('dup_check', True))}",
         f"🚫 Remove t.me link &amp; Username: {_onoff(c.get('strip_promo', True))}",
@@ -419,7 +419,7 @@ def task_kb(uid: int, task: dict, lang: str) -> InlineKeyboardMarkup:
     d = default_task(uid)
     card_label = "🎨 Image Card" + ("" if lim["card"] else " 🔒")
     rows = [
-        [btn(f"🏷️ Tag: {c.get('tag') or tr(lang, 'set it', 'set karein')} ✏️", callback_data=f"t:{tid}:tag"),
+        [btn("🏷️ Amzn Affiliate Tag", callback_data=f"t:{tid}:tag"),
          btn("📢 Destination", callback_data=f"t:{tid}:dest")],
         [btn("📥 Draft", callback_data=f"t:{tid}:src"),
          btn(tr(lang, "🔍 Which Posts", "🔍 Kaun Si Posts"), callback_data=f"t:{tid}:filt")],
@@ -458,17 +458,32 @@ def task_kb(uid: int, task: dict, lang: str) -> InlineKeyboardMarkup:
 def tag_text(task, lang):
     c = task["cfg"]
     return tr(lang,
-              f"🏷️ <b>Affiliate Tag</b> — {esc(tname(task, lang))}\n\n"
+              f"🏷️ <b>Amazon Affiliate Tag</b> — {esc(tname(task, lang))}\n\n"
               f"Current: <code>{esc(c.get('tag') or 'not set')}</code>\n\n"
               "Your tag is added to <b>every Amazon link and button</b> of this task, so the "
               "commission comes to you.\n\n"
-              "✏️ <b>To change it, just send the new tag now</b> (example: <code>mydeals-21</code>)\n"
               "<i>Find it in Amazon Associates (affiliate-program.amazon.in), top-right corner.</i>",
-              f"🏷️ <b>Affiliate Tag</b> — {esc(tname(task, lang))}\n\n"
+              f"🏷️ <b>Amazon Affiliate Tag</b> — {esc(tname(task, lang))}\n\n"
               f"Abhi: <code>{esc(c.get('tag') or 'set nahi')}</code>\n\n"
-              "Ye tag is task ke <b>har Amazon link aur button</b> mein lagega, taaki kamai aapko mile.\n\n"
-              "✏️ <b>Badalna hai to abhi naya tag bhej dein</b> (jaise <code>mydeals-21</code>)\n"
+              "Ye tag is task ke <b>har Amazon link aur button</b> mein lagta hai, taaki kamai aapko mile.\n\n"
               "<i>Amazon Associates (affiliate-program.amazon.in) mein upar right corner pe milta hai.</i>")
+
+
+def tag_kb(task, lang):
+    tid = task["id"]
+    label = (tr(lang, "✏️ Change Affiliate Tag", "✏️ Change Affiliate Tag") if task["cfg"].get("tag")
+             else tr(lang, "➕ Set Affiliate Tag", "➕ Affiliate Tag set karein"))
+    return InlineKeyboardMarkup([[btn(label, GREEN, callback_data=f"t:{tid}:tagchg")], back_row(tid, lang)])
+
+
+def tag_ask_text(task, lang):
+    return tr(lang,
+              f"✏️ <b>Send the new Amazon Affiliate Tag</b> — {esc(tname(task, lang))}\n\n"
+              f"Current: <code>{esc(task['cfg'].get('tag') or 'not set')}</code>\n"
+              "Example: <code>mydeals-21</code> (ends with <b>-21</b>)",
+              f"✏️ <b>Naya Amazon Affiliate Tag bhejein</b> — {esc(tname(task, lang))}\n\n"
+              f"Abhi: <code>{esc(task['cfg'].get('tag') or 'set nahi')}</code>\n"
+              "Jaise: <code>mydeals-21</code> (aakhir mein <b>-21</b>)")
 
 
 # ── Destination / Draft ─────────────────────────────────────────────────
@@ -1026,8 +1041,40 @@ async def handle_task_callback(query, context, uid: int, data: str) -> bool:
         return True
 
     if act == "tag":
+        context.user_data.pop("tag_new", None)
+        if not cfg.get("tag"):
+            # Tag set hi nahi — seedha maango (naya task)
+            _ask(context, "t_tag", tid)
+            await show(query, context, tag_ask_text(task, lang), InlineKeyboardMarkup([back_row(tid, lang)]))
+            return True
+        context.user_data.pop("action", None)
+        await show(query, context, tag_text(task, lang), tag_kb(task, lang))
+        return True
+    if act == "tagchg":
         _ask(context, "t_tag", tid)
-        await show(query, context, tag_text(task, lang), InlineKeyboardMarkup([back_row(tid, lang)]))
+        await show(query, context, tag_ask_text(task, lang),
+                   InlineKeyboardMarkup([[btn(tr(lang, "❌ Cancel", "❌ Cancel"), callback_data=f"t:{tid}:tag")]]))
+        return True
+    if act == "tagok":
+        new_tag = context.user_data.pop("tag_new", None)
+        if not new_tag or context.user_data.pop("tag_new_tid", None) != tid:
+            await show(query, context, tr(lang, "⚠️ This request expired — tap Change again.",
+                                          "⚠️ Ye request purani ho gayi — Change dobara dabayein."),
+                       tag_kb(task, lang))
+            return True
+        old_tag = cfg.get("tag") or ""
+        cfg["tag"] = new_tag
+        save()
+        if old_tag != new_tag:
+            await notify_task_event(query.get_bot(), uid, task, "🏷️ <b>Tag badla</b>"
+                                    + (f" (pehle <code>{esc(old_tag)}</code>)" if old_tag else ""))
+        await query.answer(tr(lang, "✅ Tag changed", "✅ Tag badal gaya"))
+        await show(query, context,
+                   tr(lang, f"✅ <b>Amazon Affiliate Tag changed</b>\n<code>{esc(old_tag or '—')}</code> ➜ "
+                            f"<code>{esc(new_tag)}</code>\n\n",
+                      f"✅ <b>Amazon Affiliate Tag badal gaya</b>\n<code>{esc(old_tag or '—')}</code> ➜ "
+                      f"<code>{esc(new_tag)}</code>\n\n") + task_text(uid, task, lang),
+                   task_kb(uid, task, lang))
         return True
 
     if act in ("dest", "src"):
@@ -1354,6 +1401,19 @@ async def handle_task_input(update: Update, context, uid: int, action: str) -> b
                            "(aakhir mein <b>-21</b>). Dobara bhejein."))
             return True
         old_tag = cfg.get("tag") or ""
+        if old_tag and old_tag != text:
+            # Purana tag badalna — pehle confirm karwao, tab replace
+            context.user_data.pop("action", None)
+            context.user_data["tag_new"], context.user_data["tag_new_tid"] = text, tid
+            await reply(tr(lang,
+                           f"🏷️ <b>Change Amazon Affiliate Tag?</b>\n\nOld: <code>{esc(old_tag)}</code>\n"
+                           f"New: <code>{esc(text)}</code>\n\nEvery new post of this task will use the new tag.",
+                           f"🏷️ <b>Amazon Affiliate Tag badlein?</b>\n\nPurana: <code>{esc(old_tag)}</code>\n"
+                           f"Naya: <code>{esc(text)}</code>\n\nIs task ki har nayi post mein naya tag lagega."),
+                        InlineKeyboardMarkup([
+                            [btn(tr(lang, "✅ Yes, change", "✅ Haan, badlo"), GREEN, callback_data=f"t:{tid}:tagok")],
+                            [btn(tr(lang, "❌ Cancel", "❌ Cancel"), callback_data=f"t:{tid}:tag")]]))
+            return True
         cfg["tag"] = text
         done()
         if old_tag != text:
@@ -1474,7 +1534,7 @@ def config_text(uid: int, task: dict, lang: str) -> str:
     cap = "∞" if lim.get("key") == "admin" else lim.get("daily", 0)
 
     lines = [f"⚙️ <b>Config — {esc(tname(task, lang))}</b>  {state}{star}\n",
-             f"🏷️ Affiliate Tag: {val(c.get('tag'))}",
+             f"🏷️ Amazon Affiliate Tag: {val(c.get('tag'))}",
              f"📥 Draft: {chan(c.get('source_title'), c.get('source_username'), '❌')}",
              f"📢 Destination: {chan(c.get('channel_title'), c.get('channel_username'), '❌')}",
              f"📤 {tr(lang, 'Today', 'Aaj')}: {posts_today(uid, task['id'])} / {cap}\n",
